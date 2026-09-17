@@ -1,0 +1,15 @@
+{
+  "listen": ":8081",
+  "mysql_addr": "127.0.0.1:3306",
+  "mysql_user": "REPLACE_ME",
+  "mysql_pass": "REPLACE_ME",
+  "mysql_db": "openvpn_pannel",
+  "passwd_salt": "REPLACE_ME_random_string",
+  "sqlite_db": "",
+  "session_secret": "REPLACE_ME_secret-key/32-byte-long",
+  "working_dir": "/ABSOLUTE/PATH/TO/openvpn-pannel/workdir",
+  "app_cmd": "/ABSOLUTE/PATH/TO/openvpn-pannel/openvpn-pannel -config /ABSOLUTE/PATH/TO/openvpn-pannel/config.json",
+  "internal_api_listen": "127.0.0.1:59003",
+  "max_log_size_kb": 20480,
+  "allow_edit_resource": false
+}

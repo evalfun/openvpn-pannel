@@ -1,0 +1,162 @@
+package api
+
+import (
+	"embed"
+	"net/http"
+	"openvpn-pannel/internal/assets"
+	"path/filepath"
+	"strings"
+
+	"github.com/gin-contrib/sessions"
+	"github.com/gin-contrib/sessions/cookie"
+	"github.com/gin-gonic/gin"
+)
+
+var staticFiles embed.FS
+
+func getContentType(path string) string {
+	ext := filepath.Ext(path)
+	switch ext {
+	case ".js":
+		return "application/javascript"
+	case ".css":
+		return "text/css"
+	case ".html", ".htm":
+		return "text/html; charset=utf-8"
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".svg":
+		return "image/svg+xml"
+	case ".json":
+		return "application/json"
+	default:
+		return "application/octet-stream"
+	}
+}
+func (a *App) setupStaticFiles() {
+	// 静态文件处理器
+	a.router.NoRoute(func(c *gin.Context) {
+		path := c.Request.URL.Path
+		if strings.Contains(path, "..") {
+			c.Status(http.StatusNotFound)
+			return
+		}
+
+		// 去掉开头的 /
+		filePath := strings.TrimPrefix(path, "/")
+		if filePath == "" {
+			filePath = "index.html"
+		}
+
+		// 从 bindata 获取文件内容
+		data, err := assets.Asset(filePath)
+		if err != nil {
+			// fallback 到 index.html（SPA 支持）
+			data, err = assets.Asset("index.html")
+			if err != nil {
+				c.Status(http.StatusNotFound)
+				return
+			}
+			filePath = "index.html"
+		}
+
+		// 自动设置 Content-Type
+		contentType := getContentType(filePath)
+		c.Data(http.StatusOK, contentType, data)
+	})
+}
+func (a *App) setupRoutes() {
+	store := cookie.NewStore([]byte(a.cfg.SessionSecret))
+	store.Options(sessions.Options{
+		HttpOnly: true,
+		MaxAge:   36000, // 10 小时
+		Secure:   false, // ← 关键：设为 false 表示不强制 HTTPS
+		Path:     "/",
+	})
+	a.router.Use(sessions.Sessions("session", store))
+
+	api := a.router.Group("/api")
+	{
+
+		api.GET("/builddate", a.AdminLoginWarper(a.GetBuildDate))
+
+		// 用户接口
+		api.POST("/user/login", a.UserLoginHandler)
+		api.POST("/user/logout", a.UserLogoutHandler)
+		api.POST("/user/create", a.AdminLoginWarper(a.CreateUserHandler))
+		api.GET("/user/info", a.UserLoginWarper(a.GetUserInfoHandler))
+		api.POST("/user/info", a.UserLoginWarper(a.UpdateUserInfoHandler))
+		api.GET("/user/list", a.AdminLoginWarper(a.ListUserHandler))
+		api.POST("/user/delete", a.AdminLoginWarper(a.DeleteUserHandler))
+		api.POST("/user/reset_traffic", a.AdminLoginWarper(a.ResetUserTrafficHandler))
+
+		// 用户组接口
+		api.POST("/group/create", a.AdminLoginWarper(a.CreateGroupHandler))
+		api.GET("/group/list", a.AdminLoginWarper(a.ListGroupsHandler))
+		api.POST("/group/delete", a.AdminLoginWarper(a.DeleteGroupHandler))
+		api.POST("/group/update", a.AdminLoginWarper(a.UpdateGroupHandler))
+
+		api.GET("/group/user/list", a.AdminLoginWarper(a.ListUsersInGroupHandler))
+		api.POST("/group/user/add", a.AdminLoginWarper(a.AddUserToGroupHandler))
+		api.POST("/group/user/remove", a.AdminLoginWarper(a.RemoveUserFromGroupHandler))
+		api.POST("/group/user/add/batch", a.AdminLoginWarper(a.BatchAddUsersToGroupHandler))
+
+		api.POST("/group/acl/add", a.AdminLoginWarper(a.AddGroupACLHandler))
+		api.GET("/group/acl/list", a.AdminLoginWarper(a.ListGroupACLHandler))
+		api.POST("/group/acl/delete", a.AdminLoginWarper(a.DeleteGroupACLHandler))
+
+		// 服务器接口
+		api.POST("/server/create", a.AdminLoginWarper(a.CreateOpenVPNServerHandler))
+		api.POST("/server/update", a.AdminLoginWarper(a.UpdateOpenVPNServerHandler))
+		api.POST("/server/delete", a.AdminLoginWarper(a.DeleteOpenVPNServerHandler))
+		api.GET("/server/list", a.AdminLoginWarper(a.ListOpenVPNServerHandler))
+		api.GET("/server/list/user_perm", a.AdminLoginWarper(a.ListOpenVPNServerByUserPermissionHandler))
+		api.GET("/server/info", a.AdminLoginWarper(a.GetOpenVPNServerInfoHandler))
+
+		api.POST("/server/start", a.AdminLoginWarper(a.StartOpenVPNServerInstanceHandler))
+		api.POST("/server/stop", a.AdminLoginWarper(a.StopOpenVPNServerInstanceHandler))
+
+		api.GET("/server/log", a.AdminLoginWarper(a.GetOpenVPNServerLogHandler))
+		api.POST("/server/log/clear", a.AdminLoginWarper(a.ClearOpenVPNServerLogHandler))
+
+		api.GET("/server/status", a.AdminLoginWarper(a.GetOpenVPNServerStatusHandler))
+		api.POST("/server/client/kill", a.AdminLoginWarper(a.CloseOpenVPNServerClientHandler))
+
+		// 服务器客户端配置接口
+		api.POST("/server/client_config/add", a.AdminLoginWarper(a.AddOpenVPNServerClientConfigHandler))
+		api.POST("/server/client_config/delete", a.AdminLoginWarper(a.DeleteOpenVPNServerClientConfigHandler))
+		api.GET("/server/client_config/list", a.AdminLoginWarper(a.ListOpenVPNServerClientConfigHandler))
+
+		// 客户端配置导出
+		api.POST("/server/client_export", a.AdminLoginWarper(a.ExportClientConfigHandler))
+
+		// 证书管理接口
+		api.GET("/certificate/list", a.AdminLoginWarper(a.ListCertificateHandler))
+		api.GET("/certificate/info", a.AdminLoginWarper(a.GetCertificateHandler))
+		api.POST("/certificate/parse", a.AdminLoginWarper(a.ParseCertificateHandler))
+		api.POST("/certificate/ca/generate", a.AdminLoginWarper(a.GenerateCAHandler))
+		api.POST("/certificate/sign", a.AdminLoginWarper(a.SignCertificateHandler))
+		api.POST("/certificate/import", a.AdminLoginWarper(a.ImportCertificateHandler))
+		api.POST("/certificate/delete", a.AdminLoginWarper(a.DeleteCertificateHandler))
+		api.POST("/certificate/dh/generate", a.AdminLoginWarper(a.GenerateDHHandler))
+		api.POST("/certificate/tls_auth/generate", a.AdminLoginWarper(a.GenerateTLSAuthHandler))
+
+		// 资源接口
+		api.GET("/resource/get", a.AdminLoginWarper(a.GetResourceHandler))
+		api.POST("/resource/write", a.AdminLoginWarper(a.WriteResourceHandler))
+		api.POST("/resource/delete", a.AdminLoginWarper(a.DeleteResourceHandler))
+		api.GET("/resource/list", a.AdminLoginWarper(a.ListResourceHandler))
+
+		// 权限接口
+
+		api.GET("/permission/list", a.AdminLoginWarper(a.ListOpenVPNServerPermissionHandler))
+		api.POST("/permission/add", a.AdminLoginWarper(a.AddOpenVPNServerPermissionHandler))
+		api.POST("/permission/delete", a.AdminLoginWarper(a.DelOpenVPNServerPermissionHandler))
+
+		// 事件接口
+		api.GET("/event/list", a.AdminLoginWarper(a.GetEventList))
+		api.POST("/event/clear", a.AdminLoginWarper(a.ClearEvent))
+	}
+}

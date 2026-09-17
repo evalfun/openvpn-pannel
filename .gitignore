@@ -1,0 +1,90 @@
+# ------------------------------------------------------------------
+# Secrets / credentials
+# ------------------------------------------------------------------
+# Real runtime config contains DB password, passwd_salt, session_secret.
+# An anonymized template is tracked as config.example.json.
+/config.json
+.env
+.env.*
+*.env
+
+# Private key / certificate material (never commit)
+*.key
+*.pem
+*.crt
+*.cer
+*.csr
+*.p12
+*.pfx
+*.der
+*.ovpn
+# OpenVPN tls-auth static key / generated server configs with inline secrets
+ta.key
+/priv-doc/
+
+
+
+# ------------------------------------------------------------------
+# Runtime state / data
+# ------------------------------------------------------------------
+# SQLite databases
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# OpenVPN runtime working dir (certs, keys, ta.key, ipp/status, logs, generated scripts)
+/workdir/
+# ACL change lock file produced by client_online/offline scripts
+*.acl.lock
+
+# Logs
+*.log
+
+# ------------------------------------------------------------------
+# Build artifacts
+# ------------------------------------------------------------------
+# Compiled binary produced by build.sh (repo-root)
+/openvpn-pannel
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+
+# Vite / frontend build output (embedded into internal/assets/assets.go via go-bindata).
+# Ignore any dist/ build-output dir (front/dist and stale copies in the Go tree).
+dist/
+
+# Go workspace / coverage
+coverage.out
+coverage.html
+
+# ------------------------------------------------------------------
+# Dependencies
+# ------------------------------------------------------------------
+node_modules/
+/front/node_modules/
+
+# ------------------------------------------------------------------
+# Editor / OS cruft
+# ------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*.tmp
+*~
+
+# ------------------------------------------------------------------
+# Keep generated bindata (needed so `go build` works without go-bindata)
+# ------------------------------------------------------------------
+!internal/assets/assets.go
+!internal/ovpn_server/assets.go
+
+# Local OpenWrt packaging/build scratch space
+openwrt/
+*.srl

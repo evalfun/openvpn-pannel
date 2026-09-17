@@ -1,0 +1,807 @@
+# OpenVPN 面板 使用手册
+
+> 一个自托管的 OpenVPN 管理面板：统一管理**用户**、**用户组**、**OpenVPN 服务器实例**，并通过
+> `iptables`/`ipset` 做访问控制、通过 `tc` 做带宽限速。面板负责“编排”，真正的连接与转发由 OpenVPN 完成。
+
+- 获取版本：`./openvpn-pannel version`
+- 默认面板监听：`:8081`（配置项 `listen`）
+- 默认内部 API：`127.0.0.1:59003`（配置项 `internal_api_listen`，仅本机访问）
+
+## 目录
+
+1. 核心概念
+2. 快速开始
+3. 命令行（CLI）
+4. 配置文件 config.json
+5. 面板功能
+6. 权限模型
+7. ACL 与防火墙
+8. 带宽限速（tc）
+9. 资源与脚本
+10. 证书与客户端配置
+11. 日志、状态与轮换
+12. 安全建议
+13. 部署（systemd）
+14. 常见问题（FAQ）
+15. 附录
+
+---
+
+## 1. 核心概念
+
+| 概念 | 说明 |
+| --- | --- |
+| 面板（Web） | 用户/用户组/服务器/资源/日志的可视化管理界面，仅 `admin` 组可登录。 |
+| 内部 API | `internal_api_listen`，只监听本机；认证脚本、上下线脚本通过它回调查询权限、ACL、限速。 |
+| 服务器实例 | 一个 OpenVPN 进程 + 一套工作目录（证书、`server.conf`、日志、脚本）。 |
+| 工作目录 | `working_dir/<服务器ID>/`，每个实例独立。 |
+| 用户组权限 / ACL | 决定客户端登录哪台服务器、能访问哪些网段。 |
+| 限速策略 | 决定客户端上/下行速率，客户端上线时由 `tc` 自动生效。 |
+| 事件 | 上线/下线/认证成功或失败/服务器启停/ACL 增删等审计记录。 |
+
+### 方向约定（重要）
+
+- **上传**：服务器 → 客户端（面板/服务端视角的“发送”，`tc` 出方向）。
+- **下载**：客户端 → 服务器（面板/服务端视角的“接收”，`tc` 入方向）。
+- 流量统计中的 `↑` 为上传、`↓` 为下载，含义与上面一致。
+
+---
+
+## 2. 快速开始
+
+```bash
+# 1) 初始化数据库（首次部署、或升级版本后执行）
+./openvpn-pannel -config=config.json migratedb
+
+# 2) 创建管理员用户：  用户名  密码  描述
+./openvpn-pannel -config=config.json createuser admin 'ADMIN_PASSWORD_111222333' 管理员
+
+# 3) 创建 admin 用户组（名称必须为 admin）
+./openvpn-pannel -config=config.json creategroup admin
+
+# 4) 把管理员加入 admin 组
+./openvpn-pannel -config=config.json addusertogroup admin admin
+
+# 5)（可选）生成一份示例配置
+./openvpn-pannel democonfig > config.json
+
+# 6) 启动面板
+./openvpn-pannel -config=config.json run
+```
+
+启动后浏览器访问 `http://<主机>:8081`，用 `admin` 登录。
+
+> - `admin` 组是特殊组：**只有 admin 组成员能登录面板**，普通用户只能用于 VPN 认证。
+> - 建议不要把 VPN 用户放进 `admin` 组。
+> - 修改服务器配置后需要**重启**该服务器实例才生效；修改客户端配置（CCD）后需**客户端重连**才生效。
+
+---
+
+## 3. 命令行（CLI）
+
+用法：`./openvpn-pannel [-config=<路径>] <命令>`。`-config` 默认值为 `config.json`。
+
+| 命令 | 说明 | 示例 |
+| --- | --- | --- |
+| `migratedb` | 迁移/初始化数据库（建表、加字段） | `./openvpn-pannel -config=config.json migratedb` |
+| `run` | 启动面板与内部 API，自动拉起自启动的服务器 | `./openvpn-pannel -config=config.json run` |
+| `createuser` | 创建用户：`<用户名> <密码> <描述>` | `./openvpn-pannel createuser u1 'P@ssw0rd' 测试用户` |
+| `creategroup` | 创建用户组：`<组名>` | `./openvpn-pannel creategroup office` |
+| `addusertogroup` | 把用户加入用户组：`<用户名> <组名>` | `./openvpn-pannel addusertogroup u1 office` |
+| `democonfig` | 输出示例配置 JSON 到标准输出 | `./openvpn-pannel democonfig > config.json` |
+| `version` | 输出构建时间 | `./openvpn-pannel version` |
+
+**批量创建用户示例**
+
+```bash
+#!/bin/bash
+for i in $(seq 1 50); do
+  ./openvpn-pannel -config=config.json createuser "user$i" "Passw0rd_$i" "office-user-$i"
+  ./openvpn-pannel -config=config.json addusertogroup "user$i" office
+done
+```
+
+> 通过 CLI 创建的用户默认限速策略为“依据活跃用户组的最低速率”。如需固定限速/不限速，请在面板中调整。
+
+---
+
+## 4. 配置文件 config.json
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `listen` | string | 面板 Web 监听地址，如 `:8081` 或 `0.0.0.0:8081`。 |
+| `mysql_addr` | string | MySQL 地址 `host:port`（使用 MySQL 时必填）。 |
+| `mysql_user` | string | MySQL 用户名。 |
+| `mysql_pass` | string | MySQL 密码。 |
+| `mysql_db` | string | MySQL 数据库名。 |
+| `sqlite_db` | string | SQLite 文件路径。**非空时优先使用 SQLite**，忽略 MySQL。 |
+| `passwd_salt` | string | 密码盐（随机字符串）。**一旦设定不要更改**，否则所有密码失效。 |
+| `session_secret` | string | 会话签名密钥，建议 32 字符随机串。更改后所有登录会话失效。 |
+| `working_dir` | string | 工作目录绝对路径，存放各服务器实例的配置/证书/日志。 |
+| `internal_api_listen` | string | 内部 API 监听地址，建议保持 `127.0.0.1:59003`。 |
+| `max_log_size_kb` | int | 单服务器日志容量上限（KB）。达到后自动轮换并清理最早归档；`<=0` 关闭轮换。 |
+| `allow_edit_resource` | bool | 是否允许修改/重置脚本等资源。**默认 false**，见第 9、12 节。 |
+
+> `app_cmd`：历史遗留字段，当前版本未使用，可忽略或删除。
+
+**完整示例**
+
+```json
+{
+  "listen": ":8081",
+  "mysql_addr": "127.0.0.1:3306",
+  "mysql_user": "ovp",
+  "mysql_pass": "CHANGE_ME",
+  "mysql_db": "openvpn_pannel",
+  "sqlite_db": "",
+  "passwd_salt": "CHANGE_ME_random_string",
+  "session_secret": "CHANGE_ME_32_byte_random_secret",
+  "working_dir": "/opt/openvpn-pannel/workdir",
+  "internal_api_listen": "127.0.0.1:59003",
+  "max_log_size_kb": 20480,
+  "allow_edit_resource": false
+}
+```
+
+**只使用 SQLite 的示例**（无需 MySQL，部署最简单）
+
+```json
+{
+  "listen": ":8081",
+  "sqlite_db": "/opt/openvpn-pannel/data.db",
+  "passwd_salt": "CHANGE_ME_random_string",
+  "session_secret": "CHANGE_ME_32_byte_random_secret",
+  "working_dir": "/opt/openvpn-pannel/workdir",
+  "internal_api_listen": "127.0.0.1:59003",
+  "max_log_size_kb": 20480,
+  "allow_edit_resource": false
+}
+```
+
+---
+
+## 5. 面板功能
+
+顶部导航：**用户管理 / 用户组管理 / 服务器管理 / 证书管理 / 资源管理 / 日志·状态 / 帮助信息**。
+
+### 5.1 用户管理
+
+- 字段：用户名、密码、描述、**限速策略**、流量（总计/当前会话）。
+- 支持按用户名搜索、分页、批量删除、清除流量。
+- **查看**：查看用户详情、所属用户组、在各服务器上的权限与 ACL。
+- **更新信息**：修改密码（留空不改）、描述与限速策略。
+- 角色说明：`admin` 组成员可管理面板；其他用户仅用于 VPN。
+
+限速策略取值：
+
+| 值 | 策略 | 说明 |
+| --- | --- | --- |
+| 0 | 不设置任何限速策略 | 完全不限速。 |
+| 1 | 依据活跃用户组的最低速率（默认） | 在活跃用户组中取**最低**限速。 |
+| 2 | 依据活跃用户组的最高速率 | 在活跃用户组中取**最高**限速。 |
+| 3 | 固定限速 | 使用该用户自己的上传/下载限速值。 |
+
+### 5.2 用户组管理
+
+- 字段：组名（唯一）、描述、**上传限速**、**下载限速**（单位 KB/s，0=不限速）。
+- 一个用户可属于多个组，一个组可包含多个用户。
+- **管理** 面板分四个标签页：
+  - 管理用户：添加/移除组内用户（支持批量、搜索）。
+  - 管理 ACL：增删该组允许访问的网段。
+  - 修改信息：修改描述与组限速。
+  - 删除用户组：不可逆操作。
+
+### 5.3 服务器管理
+
+创建服务器时需要填写以下信息：
+
+| 字段 | 说明 | 示例 |
+| --- | --- | --- |
+| 服务器名称 | 唯一名称 | `office-vpn` |
+| 监听端口 | OpenVPN 端口 | `1194` |
+| 网卡名称 | `dev`，建议写成实际设备名 `tun0` | `tun0` |
+| 协议 | `udp` 或 `tcp` | `udp` |
+| 拓扑 | 一般为 `subnet` | `subnet` |
+| 服务器网段 | 网络地址 + 掩码 | `10.8.0.0 255.255.255.0` |
+| 心跳配置 | `keepalive` | `10 60` |
+| 自动启动 | 面板启动时自动拉起该实例 | 开 |
+| 同证书多次登录 | `duplicate-cn` | 关 |
+| CA 证书 / 服务器证书 / 私钥 | 可直接粘贴 PEM，或从证书管理选择引用（见 5.4 与第 10 节） | `cert-stor:1/cert` |
+| DH 参数 | 见第 10 节，可一键生成（RFC 3526 标准 MODP 组） | 点“一键生成” |
+| TLS-Auth | 见第 10 节，可用 openvpn 一键生成 | 点“用 openvpn 生成 ta.key” |
+| 其他配置 | 追加到 `server.conf` 的原始配置行 | `push "redirect-gateway def1"` |
+
+- **服务器路由**：填写要推送给客户端的网段，面板生成 `push "route <net>"`。
+- **客户端配置（CCD）**：按“客户端证书名称”下发；实例运行中修改会实时写入 `ccd` 目录。
+- **权限**：分“用户权限”和“用户组权限”，各有允许/拒绝，详见第 6 节。
+- **启停**：启动会写配置并拉起进程；停止会执行退出脚本并清理该实例的运行时 ACL 记录。
+- **导出客户端配置**：选择服务器与客户端证书、填写地址端口，即可下载 `.ovpn`（见 5.4 与第 10 节）。
+- 删除服务器会停止检查、删除数据库记录并清理 `working_dir/<ID>/`。
+
+### 5.4 证书管理
+
+面板内置证书管理，**使用 Go 标准库生成，不依赖 openssl**（适合 OpenWrt 等环境）。
+
+- **一级页面（CA 列表）**：生成新 CA、导入 CA；每行有“查看内容 / 管理证书 / 删除”。
+- **二级页面（某 CA 下，点“管理证书”进入）**：
+  - 用该 CA 签发**服务器证书**或**客户端证书**；
+  - 导入证书（必须由该 CA 签发，否则拒绝；可只导入证书、不带私钥）；
+  - 列出该 CA 已签发的证书，可查看内容或删除。
+- **没有私钥的 CA**：无法用它签发新证书，签发按钮会被禁用（仍可查看与导入它签发的证书）。
+- 密钥类型支持 **RSA**（2048/3072/4096）与 **ECDSA**（P-256/P-384/P-521），创建时选择。
+- 证书列表用标签标记是否含私钥；删除 CA 前需先清空其子证书，被服务器引用的证书不能删除。
+
+### 5.5 资源管理
+
+管理内置脚本与模板（见第 9 节）。**默认不可编辑**；如需在线编辑，必须在 `config.json` 中设置
+`"allow_edit_resource": true`，否则“编辑/重置”会被禁用，接口返回 403。
+
+### 5.6 日志·状态
+
+- **状态**：服务器版本、管理接口版本、在线客户端列表（用户名、证书名、真实 IP、虚拟 IP、上/下行字节、
+  连接时间、被应用的 ACL），并支持**断开**指定客户端。
+- **服务器日志**：`openvpn.log`，可按行范围读取、清空。
+- **脚本日志**：`auth.log`，记录认证与上下线脚本输出。
+- **事件**：按服务器查询/清空审计事件（见第 11 节事件类型）。
+
+---
+
+## 6. 权限模型
+
+服务器权限由“用户权限”和“用户组权限”共同决定，每条权限为 **允许(PERMIT)** 或 **拒绝(DENY)**。
+
+**优先级**：`用户拒绝 > 用户允许 > 组拒绝 > 组允许`。
+
+| 场景 | 结果 |
+| --- | --- |
+| 用户被 DENY | 直接拒绝，忽略其它规则。 |
+| 用户被 PERMIT | 允许登录。 |
+| 用户无用户级规则，但某所属组被 DENY | 拒绝（组拒绝优先于组允许）。 |
+| 用户无用户级规则，某所属组被 PERMIT | 允许登录。 |
+| 完全没有匹配规则 | **默认拒绝**。 |
+
+### 登录后能得到哪些 ACL
+
+| 通过规则 | 得到的 ACL |
+| --- | --- |
+| 用户级 PERMIT | 用户**所有**所属组的 ACL（不再看组的权限规则）。 |
+| 组级 PERMIT | `组允许的组` ∩ `用户所属的组` 的 ACL；被 DENY 的组除外。 |
+| 用户级 DENY | 无。 |
+| 无任何权限 / 无匹配组 | 能登录但**不添加任何 ACL**，无法访问受控网络。 |
+
+**示例一：组级授权（取交集）**
+
+- 用户 `u1` 属于：组 A、组 B、组 C
+- 服务器允许：组 A、组 C
+- `u1` 得到：组 A、组 C 的 ACL；得不到组 B 的 ACL。
+
+**示例二：用户级授权（取并集）**
+
+- 用户 `u2` 属于：组 A、组 B、组 C
+- 服务器允许：组 A、组 C（组规则）
+- 但给 `u2` 单独设置了**用户级允许**
+- `u2` 得到：组 A、组 B、组 C 的 ACL（用户级允许不看组规则）。
+
+**示例三：只给用户权限、无任何组**
+
+- 用户 `u3` 只有用户级允许，不属于任何组
+- 结果：可以登录服务器，但**没有任何 ACL**，访问不了任何受控网络。
+- 建议：至少给用户加一个组，并在组里配置 ACL。
+
+---
+
+## 7. ACL 与防火墙
+
+### 7.1 ACL 规则
+
+- 类型：`4`（IPv4）或 `6`（IPv6）。
+- 值：CIDR，例如 `10.0.0.0/24`、`192.168.1.0/24`、`fc00::/64`。
+- 面板会自动校验并**清零主机位**：输入 `10.0.0.5/24` 会保存为 `10.0.0.0/24`。
+
+### 7.2 防火墙联动
+
+客户端上线时，面板根据其权限计算 ACL，并通过脚本写入系统防火墙；下线时回收。
+
+- 若安装了 `ipset`：采用**聚合模式**，性能更好。
+  - 相同 ACL 的客户端共享一组对象：源集合 `hash:ip`、目标集合 `hash:net`、子链。
+  - 规则条数只与“不同的 ACL 组数”有关，与在线人数无关。
+  - 特例：ACL 中包含 `0.0.0.0/0`（全部放行）时，退化为在主链直接 `ACCEPT`（因为 `hash:net` 不接受零前缀网段）。
+  - 上下线通过 `flock` 串行化，避免并发改乱防火墙状态。
+- 若未安装 `ipset`：回落到**传统模式**，每条 ACL 生成一条 `iptables` 规则。
+- 建议安装 `ipset` 与内核模块 `ip_set` / `hash_ip` / `hash_net`。
+
+> 默认脚本仅对 **IPv4 ACL** 生效；IPv6 ACL 会被保存，但默认脚本不应用（可按需自行扩展脚本）。
+
+### 7.3 基础防火墙行为（启动脚本）
+
+服务器启动时会为该实例建立独立链 `openvpn_acl_<服务器ID>`：
+
+1. 放行 `ESTABLISHED,RELATED`；
+2. 进入该实例的转发流量先经过链 `openvpn_acl_<ID>`，未匹配则 `DROP`；
+3. 出该实例的流量 `ACCEPT`；
+4. 对 IPv6 同样建立链（仅放行已建立连接，默认 ACL 未启用）。
+
+---
+
+## 8. 带宽限速（tc）
+
+客户端上线时，面板计算其生效限速并下发 `tc` 规则；下线时回收。
+
+- **单位**：KB/s（千字节每秒，1 KB = 1000 字节）。内部换算：`kbit/s = KB/s × 8`。
+- **上传**：服务器 → 客户端，`tc` 出方向（HTB，按目的 IP 整形）。
+- **下载**：客户端 → 服务器，`tc` 入方向（police，按源 IP 限速）。
+- **0 = 不限速**。
+
+### 8.1 用户限速策略
+
+先看用户策略：
+
+| 值 | 策略 | 计算方式 |
+| --- | --- | --- |
+| 0 | 不设置任何限速策略 | 上行=0、下行=0（不限速）。 |
+| 1 | 依据活跃用户组的最低速率（默认） | 对**活跃用户组**的上/下行限速分别取最低，0 视为“无限大”被忽略。 |
+| 2 | 依据活跃用户组的最高速率 | 对活跃用户组的上/下行限速分别取最高；**任一活跃组为 0 则整体不限速**。 |
+| 3 | 固定限速 | 使用用户自身的上传/下载限速。 |
+
+### 8.2 活跃用户组
+
+**活跃用户组** = 用户所属、且被该服务器允许连接的用户组（判定与 ACL 权限解析一致）：
+
+- 用户级 `DENY` → 没有活跃组；
+- 用户级 `PERMIT` → 用户所属**全部**组都算活跃；
+- 否则 → 存在组级 `PERMIT` 且不存在组级 `DENY` 的组才活跃（组 `DENY` 优先）。
+
+**示例**：用户 A 同属“组A、组B”；服务器只允许“组A”连接；则用户 A 连到该服务器时，
+**活跃用户组 = 组A**。
+
+### 8.3 计算示例
+
+设活跃用户组：组A =（上行 100、下行 200），组B =（上行 0、下行 50）。
+
+| 用户策略 | 生效上行 | 生效下行 | 说明 |
+| --- | --- | --- | --- |
+| 1 活跃组最低 | 100 | 50 | 上行取 min(100, 忽略0)=100；下行取 min(200,50)=50。 |
+| 2 活跃组最高 | 0 | 200 | 上行有 0（组B）→ 不限速；下行取 max(200,50)=200。 |
+| 3 固定（10/20） | 10 | 20 | 直接使用用户值。 |
+| 0 不限速 | 0 | 0 | 不做限制。 |
+
+### 8.4 tc 实现要点
+
+- 出方向（上传）：`tc` 根队列 `htb`，每个客户端一个类，按虚拟 IP 的**目的地址**过滤。
+- 入方向（下载）：`tc` `ingress` + `police`，按虚拟 IP 的**源地址**过滤并丢弃超额报文。
+- 限速对象的编号由虚拟 IP 末两段推导，稳定且唯一；重复上线会先清理同编号规则再重建，避免残留。
+- **修改限速后需要客户端重连**（或服务器重启）才会重新下发。
+
+### 8.5 依赖与权限
+
+- 需要安装 `iproute2`（`tc`）及内核模块：`sch_htb`、`cls_u32`、`act_police`、`sch_ingress`。
+- 脚本以 `sudo tc ...` 执行，需要在 `sudoers` 中放行 `tc`（见第 12 节）。
+- 接口名使用服务器配置的“网卡名称”（`dev`）；请填实际存在的设备名（如 `tun0`），否则跳过限速并记录日志。
+
+---
+
+## 9. 资源与脚本
+
+“资源管理”维护以下内置资源。它们保存于数据库；未覆盖时使用程序内置默认值。
+
+| 资源 ID | 说明 | 落地文件名（由“其他配置”决定） |
+| --- | --- | --- |
+| `config` | 服务器配置模板（`server.conf`） | `server.conf` |
+| `client-config` | 客户端配置导出模板（`.ovpn` 渲染用） | — |
+| `auth.sh` | 客户端认证脚本 | `_auth.sh` |
+| `client_online.sh` | 客户端上线脚本（ACL + 限速） | `_client_online.sh` |
+| `client_offline.sh` | 客户端下线脚本（回收 ACL + 限速） | `_client_offline.sh` |
+| `server_start.sh` | 服务器实例启动脚本（建链） | —（直接执行） |
+| `server_exit.sh` | 服务器实例停止脚本（拆链清理） | —（直接执行） |
+| `misc` | 其他配置（JSON，见下） | — |
+| `help` | 本帮助文档 | — |
+
+### 9.1 安全开关
+
+脚本资源会被以较高权限执行，改写它们等同“任意命令执行”。因此：
+
+- `allow_edit_resource` 默认 `false`，此时“资源管理”的编辑/重置按钮不可用，接口返回 403；
+- 确需在线编辑时，在 `config.json` 设置 `"allow_edit_resource": true` 并重启面板；
+- 编辑完成后建议改回 `false`。
+
+### 9.2 脚本模板变量
+
+脚本写入前会替换以下占位符：
+
+| 占位符 | 含义 |
+| --- | --- |
+| `__INTERNAL_API__` | 内部 API 地址（`internal_api_listen`）。 |
+| `__WORKING_DIR__` | 该实例的工作目录（末尾带 `/`）。 |
+| `__SERVER_ID__` | 服务器实例 ID。 |
+| `__SERVER_INTERFACE__` | 服务器网卡名称（`dev`）。 |
+
+### 9.3 OpenVPN 传入的环境变量（常用）
+
+| 场景 | 变量 |
+| --- | --- |
+| 认证 `auth.sh` | `username`、`password`、`common_name`、`untrusted_ip`、`untrusted_port` |
+| 上线 `client_online.sh` | `common_name`、`username`、`ifconfig_pool_remote_ip`、`untrusted_ip`、`untrusted_port` |
+| 下线 `client_offline.sh` | 上述之外还有 `bytes_received`、`bytes_sent`、`time_duration` |
+
+### 9.4 “其他配置” misc 示例
+
+```json
+{
+  "server_log": "openvpn.log",
+  "script_log": "auth.log",
+  "openvpn_path": "/sbin/openvpn",
+  "management_socket": "management.sock",
+  "ca_file_name": "ca.crt",
+  "server_cert_file_name": "server.crt",
+  "server_key_file_name": "server.key",
+  "dh_file_name": "dh2048.pem",
+  "ta_file_name": "ta.key",
+  "ccd_dir": "ccd",
+  "ipp_file_name": "ipp.txt",
+  "status_file_name": "openvpn-status.log",
+  "server_config_file_name": "server.conf",
+  "client_online_script_name": "_client_online.sh",
+  "client_offline_script_name": "_client_offline.sh",
+  "client_auth_script_name": "_auth.sh",
+  "shell_path": "/bin/bash"
+}
+```
+
+### 9.5 服务器配置模板示例（`config`）
+
+```conf
+{{if .ServerConfig.Local}}local {{.ServerConfig.Local}}{{else}};local 0.0.0.0{{end}}
+port {{.ServerConfig.Port}}
+proto {{.ServerConfig.Proto}}
+dev {{.ServerConfig.Dev}}
+ca {{.WorkingDir}}{{.MiscConfig.CAFileName}}
+cert {{.WorkingDir}}{{.MiscConfig.ServerCertFileName}}
+key {{.WorkingDir}}{{.MiscConfig.ServerKeyFileName}}
+dh {{.WorkingDir}}{{.MiscConfig.DHFileName}}
+data-ciphers {{.ServerConfig.DataCipher}}
+server {{.ServerConfig.ServerCIDR}}
+topology {{.ServerConfig.Topology}}
+management {{.WorkingDir}}{{.MiscConfig.ManagementSocket}} unix
+keepalive {{.ServerConfig.Keepalive}}
+tls-auth {{.WorkingDir}}{{.MiscConfig.TAFileName}} 0
+script-security 3
+auth-user-pass-verify {{.WorkingDir}}{{.MiscConfig.ClientAuthScriptName}} via-env
+persist-key
+persist-tun
+status {{.WorkingDir}}{{.MiscConfig.StatusFileName}}
+log-append {{.WorkingDir}}{{.MiscConfig.ServerLog}}
+verb 3
+client-config-dir {{.WorkingDir}}{{.MiscConfig.CCDDir}}
+client-disconnect {{.WorkingDir}}{{.MiscConfig.ClientOfflineScriptName}}
+client-connect {{.WorkingDir}}{{.MiscConfig.ClientOnlineScriptName}}
+{{.ServerConfig.OtherConfig}}
+
+# 可选
+# mssfix 1308
+```
+
+> 模板使用 Go 模板语法，可在“资源管理”中按需调整；**不懂不要改**，改错会导致实例无法启动。
+
+---
+
+## 10. 证书与客户端配置
+
+面板内置证书管理：用 Go 标准库生成 CA 与服务器/客户端证书（**不依赖 openssl**，适合 OpenWrt 等环境），
+支持导入已有证书，并可一键导出客户端配置。若你更习惯传统方式，也可用 OpenSSL 手动生成后粘贴（见 10.5）。
+
+### 10.1 内置证书管理
+
+入口：顶部导航「证书管理」。
+
+- **生成 CA**：填写名称与证书主题（Common Name、组织 O、国家 C、省/州 ST、城市 L、邮箱 emailAddress）、有效期，并选择密钥类型（RSA/ECDSA），生成自签名 CA。
+- **导入 CA**：粘贴 CA 证书，私钥可选。**没有私钥的 CA 无法签发新证书**。
+- **管理证书**（进入二级页面，针对某个 CA）：
+  - 签发**服务器证书**或**客户端证书**（同样可填写上述主题字段、选择密钥类型与有效期）；
+  - 导入证书：**必须由该 CA 签发**，否则拒绝；**可以只导入证书、不带私钥**；
+  - 查看内容、删除。
+- 密钥类型：RSA（2048/3072/4096）或 ECDSA（P-256/P-384/P-521）。
+- 删除限制：CA 下仍有子证书时不能删除；被服务器引用的证书不能删除。
+
+### 10.2 在服务器中引用证书
+
+在「服务器管理 → 创建/编辑服务器」中，**CA 证书**、**服务器证书**、**服务器证书私钥** 三个字段：
+
+- 可直接粘贴 PEM 内容；或
+- 点「从证书管理选择」，从列表中挑选，此时数据库保存为**引用**：
+  `cert-stor:<证书ID>/cert` 或 `cert-stor:<证书ID>/key`。
+  写入 `workingDir/<服务器ID>/` 前，面板会把引用解析为实际 PEM。
+
+**DH 参数**：点“一键生成”，可选 2048/3072/4096 位。使用 RFC 3526 标准 MODP 组（等价于标准
+`openssl dhparam` 的固定群），瞬间完成，不需要长时间计算；已有值时会提示将覆盖。
+
+**TLS-Auth**：点“用 openvpn 生成 ta.key”，面板调用 `openvpn --genkey secret`（兼容旧版
+`--genkey --secret`）生成。
+
+### 10.3 客户端配置导出
+
+在「服务器管理」点「导出客户端配置」：
+
+1. 选择服务器（会自动带出该实例上次保存的地址与端口）；
+2. 选择客户端证书（没有私钥的证书也能导出，只是不含 `<key>` 块）；
+3. 填写服务器地址与端口，点“导出”，浏览器即下载 `.ovpn`。
+
+导出时按服务器 CA 的来源分两种模式：
+
+- 服务器 CA 使用“证书管理”选择：客户端证书下拉只列出**该 CA 签发的客户端证书**；
+- 服务器 CA 为手动填写：改为**手动输入客户端证书与私钥**，两者均可留空（导出后自行补全配置文件）。
+
+此外，导出窗口提供「**客户端附加配置**」多行输入（如 `mssfix 1308`、`redirect-gateway def1`），
+内容会**追加到导出配置末尾**，并与服务器地址、端口一起**按服务器实例保存**，下次导出自动回填。
+
+地址与端口**按服务器实例保存**，下次导出自动回填。导出内容由资源 `client-config` 渲染，
+使用内联 `<ca>/<cert>/<key>/<tls-auth>`，单文件即可导入使用；需要自定义时可在“资源管理”中修改该模板。
+
+### 10.4 客户端 .ovpn 参考模板
+
+```conf
+client
+dev tun
+proto udp
+remote <服务器IP> <端口>
+resolv-retry infinite
+nobind
+persist-key
+persist-tun
+auth-user-pass
+verb 3
+
+mssfix 1308
+
+<ca>
+-----BEGIN CERTIFICATE-----
+（CA 证书内容）
+-----END CERTIFICATE-----
+</ca>
+<cert>
+-----BEGIN CERTIFICATE-----
+（客户端证书内容）
+-----END CERTIFICATE-----
+</cert>
+<key>
+-----BEGIN PRIVATE KEY-----
+（客户端私钥内容）
+-----END PRIVATE KEY-----
+</key>
+<tls-auth>
+-----BEGIN OpenVPN Static key V1-----
+（ta.key 内容）
+-----END OpenVPN Static key V1-----
+</tls-auth>
+key-direction 1
+```
+
+- mssfix 字段说明  
+在某些网络下，特别是移动网络，mtu没有1500，例如只有1400，在当前协议配置和udp ipv4模式下，此时需要设置mssfix为mtu-92也就是1300。  
+
+- 计算方式  
+简单来说，**tcp mss为物理网络mtu-92**。   
+当前协议配置和udp ipv4隧道下，物理网络mtu 1400，虚拟tun接口mtu 1348，ipv4报文和tcp头部各占用20字节，所以tcp mss为1348-20-20=1308。  
+- 是否需要设置？  
+推荐为客户端设置不同的mssfix，也可以在服务器端统一设置一个比较小的mssfix。  
+不设置会增加tcp握手时间，体验上就是打开网页缓慢。
+
+### 10.5 用 OpenSSL 手动生成（可选）
+
+如果你不想使用面板内置的证书管理，也可以用 OpenSSL/OpenVPN 命令手动生成，再把内容粘贴到服务器字段：
+
+```bash
+# --- DH 参数 ---
+openssl dhparam -out ./dh2048.pem 2048
+
+# --- TLS-Auth 密钥 ---
+openvpn --genkey tls-auth ./ta.key
+
+# --- CA 私钥与证书 ---
+openssl genrsa -out ./ca.key 2048
+openssl req -new -sha256 -key ./ca.key -out ./ca.csr -subj "/C=CN/CN=server-ca"
+openssl x509 -req -days 36500 -sha256 -signkey ./ca.key -in ./ca.csr -out ./ca.crt
+
+# --- 服务器私钥与证书 ---
+openssl genrsa -out ./server.key 2048
+openssl req -new -sha256 -key ./server.key -out ./server.csr \
+  -subj "/C=CN/ST=JiangSu/L=NanJing/CN=server-cert/emailAddress=server@example.com"
+openssl x509 -req -days 36500 -sha256 -CA ./ca.crt -CAkey ./ca.key -CAcreateserial \
+  -in ./server.csr -out ./server.crt
+
+# --- 客户端私钥与证书（可重复生成多个） ---
+openssl genrsa -out ./client1.key 2048
+openssl req -new -sha256 -key ./client1.key -out ./client1.csr \
+  -subj "/C=CN/ST=Shanghai/L=PuDong/CN=client1-cert/emailAddress=client1@example.com"
+openssl x509 -req -days 36500 -sha256 -CA ./ca.crt -CAkey ./ca.key -CAcreateserial \
+  -in ./client1.csr -out ./client1.crt
+```
+
+把 `ca.crt`、`server.crt`、`server.key`、`dh2048.pem`、`ta.key` 的内容分别填入服务器设置的对应字段，
+即可与内置证书管理等价使用。
+
+### 10.6 客户端专属配置（CCD）示例
+
+在“服务器管理 → 客户端配置”中，按**客户端证书名称**添加：
+
+```conf
+# 指定客户端固定虚拟 IP
+ifconfig-push 10.8.0.100 255.255.255.0
+
+# 指定通往该客户端内网的路由（服务器端生效）
+iroute 192.168.17.0 255.255.255.0
+
+# 向该客户端推送路由
+push "route 192.168.1.0 255.255.255.0"
+```
+
+---
+
+## 11. 日志、状态与轮换
+
+### 11.1 日志文件
+
+| 日志 | 默认文件 | 说明 |
+| --- | --- | --- |
+| 服务器日志 | `openvpn.log` | OpenVPN 运行日志，可在“日志·状态”查看/清空。 |
+| 脚本日志 | `auth.log` | 认证与上下线脚本输出（含 ACL/限速设置结果）。 |
+
+### 11.2 日志轮换
+
+当某实例的日志（含其归档）总量超过 `max_log_size_kb` 时：
+
+1. 以 `copytruncate` 方式归档当前日志，文件名带纳秒时间戳；
+2. 从最早的归档开始删除，直到总量回落到上限的 **80%**；
+3. 始终**至少保留最新一个归档**。
+
+`max_log_size_kb <= 0` 时关闭轮换。
+
+### 11.3 事件类型
+
+| 值 | 事件 |
+| --- | --- |
+| 1 | 客户端上线 |
+| 2 | 客户端下线 |
+| 3 | 客户端认证失败 |
+| 4 | 客户端认证成功 |
+| 5 | 服务器启动成功 |
+| 6 | 服务器退出成功 |
+| 7 | 服务器启动失败 |
+| 8 | 服务器退出失败 |
+| 9 | 添加 ACL |
+| 10 | 删除 ACL |
+
+---
+
+## 12. 安全建议
+
+1. **资源编辑开关**：保持 `allow_edit_resource = false`；仅在需要时临时开启。
+2. **密钥强度**：`passwd_salt`、`session_secret` 使用足够长的随机字符串；不要随意外泄或更改。
+3. **内部 API**：`internal_api_listen` 绑定 `127.0.0.1`，不要暴露到公网。
+4. **最小权限 sudoers**：非 root 运行程序时，仅放行必要命令：
+
+   ```sudoers
+   # 请按实际路径替换
+   username ALL=(ALL) NOPASSWD: /usr/sbin/iptables
+   username ALL=(ALL) NOPASSWD: /usr/sbin/ip6tables
+   username ALL=(ALL) NOPASSWD: /usr/sbin/ipset
+   username ALL=(ALL) NOPASSWD: /usr/sbin/tc
+   ```
+
+5. **OpenVPN 能力**：以 root 运行可跳过此步；否则给二进制授予网络管理能力：
+
+   ```bash
+   sudo setcap cap_net_admin+ep /usr/sbin/openvpn
+   ```
+
+6. **面板访问**：建议仅内网访问，或前置 HTTPS 反向代理；`admin` 组不要放 VPN 普通用户。
+
+---
+
+## 13. 部署（systemd）
+
+将 `openvpn-pannel.service` 放在 `/etc/systemd/system/` 或 `/lib/systemd/system/`：
+
+```ini
+[Unit]
+Description=openvpn-pannel
+After=network.target nss-lookup.target
+
+[Service]
+User=openvpn
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_IPC_LOCK CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW CAP_SETGID CAP_SETUID CAP_SYS_CHROOT CAP_DAC_OVERRIDE CAP_AUDIT_WRITE
+WorkingDirectory=/opt/openvpn-pannel
+ExecStart=/opt/openvpn-pannel/openvpn-pannel -config /opt/openvpn-pannel/config.json run
+Restart=on-failure
+RestartPreventExitStatus=23
+ReadWritePaths=/opt/openvpn-pannel
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now openvpn-pannel
+```
+
+---
+
+## 14. 常见问题（FAQ）
+
+**Q1：普通用户能登录面板吗？**
+不能。只有 `admin` 组成员的用户可登录面板；其他用户仅用于 VPN 认证。
+
+**Q2：用户能认证成功，但访问不了任何网络？**
+检查：该用户/其用户组是否在目标服务器上有**允许**权限；对应组是否配置了 ACL。若只有用户权限、没有任何组，
+或没有任何匹配的权限规则，则不会下发 ACL。
+
+**Q3：修改了 ACL / 权限 / 限速，为什么不生效？**
+ACL 与限速在客户端**上线时**下发。修改后请让客户端**重新连接**；服务器配置（`server.conf` 相关）修改后需
+**重启服务器实例**。
+
+**Q4：限速没有生效？**
+依次检查：是否安装了 `tc` 及内核模块；`sudoers` 是否放行 `tc`；“网卡名称”是否为实际设备名（如 `tun0`）；
+策略计算后是否确实 > 0；客户端是否已重连。
+
+**Q5：IPv6 ACL 不生效？**
+默认脚本仅应用 IPv4 ACL；IPv6 ACL 会保存但不会自动下发，可按需扩展脚本。
+
+**Q6：资源管理里的按钮是灰色的？**
+`allow_edit_resource` 为 `false`。在 `config.json` 设为 `true` 并重启面板即可。
+
+**Q7：忘记了 admin 密码？**
+用 CLI 创建/调整：`./openvpn-pannel createuser ...`、`addusertogroup`；或直接在“用户管理”中由其他 admin 重置。
+
+**Q8：用 MySQL 还是 SQLite？**
+`sqlite_db` 非空时优先用 SQLite，适合单机、部署简单；多实例/高并发可选 MySQL（`sqlite_db` 置空）。
+
+**Q9：为什么日志目录越来越大？**
+设置 `max_log_size_kb`（如 `20480` 表示 20 MB）启用自动轮换；`<=0` 表示关闭。
+
+---
+
+## 15. 附录
+
+### 15.1 工作目录结构
+
+```
+working_dir/
+└── <服务器ID>/
+    ├── server.conf            # 渲染后的 OpenVPN 配置
+    ├── ca.crt / server.crt / server.key / dh2048.pem / ta.key
+    ├── ccd/                   # 客户端专属配置（按证书名）
+    ├── ipp.txt                # 虚拟 IP 持久化
+    ├── openvpn.log            # 服务器日志
+    ├── openvpn-status.log     # 状态文件
+    ├── management.sock        # 管理套接字
+    ├── _auth.sh / _client_online.sh / _client_offline.sh
+    └── auth.log               # 脚本日志
+```
+
+### 15.2 主要数据表
+
+| 表 | 用途 |
+| --- | --- |
+| `users` | 用户、密码哈希、流量、限速策略 |
+| `groups` | 用户组、描述、组限速 |
+| `user_groups` | 用户与用户组的多对多关系 |
+| `group_acls` | 用户组 ACL（类型 + CIDR） |
+| `servers` | 服务器实例配置与证书（CA/证书/私钥字段可为 `cert-stor:` 引用） |
+| `certificates` | 证书管理：CA / 服务器 / 客户端证书与私钥、归属 CA、有效期 |
+| `server_routes` | 推送路由 |
+| `client_configs` | 客户端专属配置（CCD） |
+| `server_permissions` | 服务器权限（用户/组，允许/拒绝） |
+| `app_resource_records` | 资源（脚本/模板/misc/help） |
+| `server_events` | 事件审计 |
+| `connected_client_info_records` | 在线客户端会话流量 |
+| `added_server_acl_records` | 本次会话已下发的 ACL（用于下线回收） |
+
+### 15.3 相关内核模块
+
+- 防火墙：`ip_set`、`ip_set_hash_ip`、`ip_set_hash_net`（使用 `ipset` 时需要）。
+- 限速：`sch_htb`、`cls_u32`、`act_police`、`sch_ingress`。
+
+---
+
+> 本帮助文档本身也是“资源管理”中的 `help` 资源。开启 `allow_edit_resource` 后，你可以按自己的环境修改它。
