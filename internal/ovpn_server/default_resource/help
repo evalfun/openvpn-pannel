@@ -50,22 +50,24 @@
 ## 2. 快速开始
 
 ```bash
-# 1) 初始化数据库（首次部署、或升级版本后执行）
-./openvpn-pannel -config=config.json migratedb
-
-# 2) 创建管理员用户：  用户名  密码  描述
-./openvpn-pannel -config=config.json createuser admin 'ADMIN_PASSWORD_111222333' 管理员
-
-# 3) 创建 admin 用户组（名称必须为 admin）
-./openvpn-pannel -config=config.json creategroup admin
-
-# 4) 把管理员加入 admin 组
-./openvpn-pannel -config=config.json addusertogroup admin admin
-
-# 5)（可选）生成一份示例配置
+# 1) 生成一份示例配置
 ./openvpn-pannel democonfig > config.json
 
-# 6) 启动面板
+# 2) 修改config.json配置文件
+
+# 3) 初始化数据库（首次部署、或升级版本后执行）
+./openvpn-pannel -config=config.json migratedb
+
+# 4) 创建管理员用户：  用户名  密码  描述
+./openvpn-pannel -config=config.json createuser admin 'ADMIN_PASSWORD_111222333' 管理员
+
+# 5) 创建 admin 用户组（名称必须为 admin）
+./openvpn-pannel -config=config.json creategroup admin
+
+# 6) 把管理员加入 admin 组
+./openvpn-pannel -config=config.json addusertogroup admin admin
+
+# 7) 启动面板
 ./openvpn-pannel -config=config.json run
 ```
 
@@ -475,9 +477,6 @@ client-config-dir {{.WorkingDir}}{{.MiscConfig.CCDDir}}
 client-disconnect {{.WorkingDir}}{{.MiscConfig.ClientOfflineScriptName}}
 client-connect {{.WorkingDir}}{{.MiscConfig.ClientOnlineScriptName}}
 {{.ServerConfig.OtherConfig}}
-
-# 可选
-# mssfix 1308
 ```
 
 > 模板使用 Go 模板语法，可在“资源管理”中按需调整；**不懂不要改**，改错会导致实例无法启动。
@@ -507,9 +506,7 @@ client-connect {{.WorkingDir}}{{.MiscConfig.ClientOnlineScriptName}}
 在「服务器管理 → 创建/编辑服务器」中，**CA 证书**、**服务器证书**、**服务器证书私钥** 三个字段：
 
 - 可直接粘贴 PEM 内容；或
-- 点「从证书管理选择」，从列表中挑选，此时数据库保存为**引用**：
-  `cert-stor:<证书ID>/cert` 或 `cert-stor:<证书ID>/key`。
-  写入 `workingDir/<服务器ID>/` 前，面板会把引用解析为实际 PEM。
+- 点「从证书管理选择」，从列表中挑选，面板会把引用解析为实际 PEM。
 
 **DH 参数**：点“一键生成”，可选 2048/3072/4096 位。使用 RFC 3526 标准 MODP 组（等价于标准
 `openssl dhparam` 的固定群），瞬间完成，不需要长时间计算；已有值时会提示将覆盖。
@@ -680,7 +677,7 @@ push "route 192.168.1.0 255.255.255.0"
 4. **最小权限 sudoers**：非 root 运行程序时，仅放行必要命令：
 
    ```sudoers
-   # 请按实际路径替换
+   # 请按实际路径和实际用户名（username）替换
    username ALL=(ALL) NOPASSWD: /usr/sbin/iptables
    username ALL=(ALL) NOPASSWD: /usr/sbin/ip6tables
    username ALL=(ALL) NOPASSWD: /usr/sbin/ipset
@@ -745,7 +742,7 @@ ACL 与限速在客户端**上线时**下发。修改后请让客户端**重新�
 策略计算后是否确实 > 0；客户端是否已重连。
 
 **Q5：IPv6 ACL 不生效？**
-默认脚本仅应用 IPv4 ACL；IPv6 ACL 会保存但不会自动下发，可按需扩展脚本。
+默认脚本仅应用 IPv4 ACL；IPv6 ACL暂未实现，IPv6 ACL 会保存但不会自动下发，可按需扩展脚本。
 
 **Q6：资源管理里的按钮是灰色的？**
 `allow_edit_resource` 为 `false`。在 `config.json` 设为 `true` 并重启面板即可。

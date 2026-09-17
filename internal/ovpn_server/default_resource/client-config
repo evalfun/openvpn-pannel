@@ -10,7 +10,6 @@ auth-user-pass
 remote-cert-tls server
 data-ciphers {{.Server.DataCipher}}
 verb 3
-mssfix 1308
 
 <ca>
 {{.CA}}</ca>

@@ -60,6 +60,26 @@ const formatTime = (unix) => {
   return new Date(unix * 1000).toLocaleString();
 };
 
+// 把 "C=CN, ST=JiangSu, CN=xxx" 形式的主题解析为字段数组
+const parseSubject = (subject) => {
+  return String(subject || '')
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => {
+      const idx = part.indexOf('=');
+      if (idx < 0) return { key: '', value: part };
+      return { key: part.slice(0, idx).trim(), value: part.slice(idx + 1).trim() };
+    });
+};
+
+const subjectCN = (subject) => {
+  const found = parseSubject(subject).find((f) => f.key === 'CN');
+  return found ? found.value : String(subject || '');
+};
+
+const subjectOthers = (subject) => parseSubject(subject).filter((f) => f.key !== 'CN');
+
 const initialKeyOptions = { key_type: 'rsa', rsa_bits: 2048, ec_curve: 'P256' };
 
 const KeyOptionsFields = ({ value, onChange }) => (
@@ -120,6 +140,7 @@ const Certificates = () => {
   const [total, setTotal] = useState(0);
 
   const [viewDialog, setViewDialog] = useState({ open: false, data: null });
+  const [subjectDialog, setSubjectDialog] = useState({ open: false, cert: null });
   const [genCADialog, setGenCADialog] = useState(false);
   const [signDialog, setSignDialog] = useState({ open: false, certType: CERT_TYPE_SERVER });
   const [importDialog, setImportDialog] = useState({ open: false, certType: CERT_TYPE_SERVER });
@@ -362,7 +383,30 @@ const Certificates = () => {
                     <TableRow key={cert.id} hover>
                       <TableCell>{cert.name}</TableCell>
                       {isLevel2 && <TableCell>{certTypeLabel(cert.type)}</TableCell>}
-                      <TableCell sx={{ maxWidth: 260, wordBreak: 'break-all' }}>{cert.subject}</TableCell>
+                      <TableCell>
+                        <Tooltip
+                          placement="right"
+                          title={
+                            <Box>
+                              {subjectOthers(cert.subject).length === 0 ? (
+                                <span>无其他字段</span>
+                              ) : (
+                                subjectOthers(cert.subject).map((f, i) => (
+                                  <div key={i}>{f.key ? `${f.key}=${f.value}` : f.value}</div>
+                                ))
+                              )}
+                            </Box>
+                          }
+                        >
+                          <Box
+                            component="span"
+                            onClick={() => setSubjectDialog({ open: true, cert })}
+                            sx={{ cursor: 'pointer', textDecoration: 'underline dotted', wordBreak: 'break-all' }}
+                          >
+                            {subjectCN(cert.subject) || '-'}
+                          </Box>
+                        </Tooltip>
+                      </TableCell>
                       <TableCell>
                         {cert.has_key ? (
                           <Chip size="small" color="success" label={cert.key_type || '已有私钥'} />
@@ -374,7 +418,7 @@ const Certificates = () => {
                       <TableCell>
                         <Tooltip title="查看内容">
                           <Button size="small" startIcon={<ViewIcon />} onClick={() => handleView(cert)}>
-                            查看内容
+                            查看
                           </Button>
                         </Tooltip>
                         {!isLevel2 && (
@@ -383,7 +427,7 @@ const Certificates = () => {
                             startIcon={<ManageIcon />}
                             onClick={() => navigate(`/dashboard/certificates/${cert.id}`)}
                           >
-                            管理证书
+                            管理
                           </Button>
                         )}
                         <Button size="small" color="error" startIcon={<DeleteIcon />} onClick={() => handleDelete(cert)}>
@@ -441,6 +485,34 @@ const Certificates = () => {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setViewDialog({ open: false, data: null })}>关闭</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* 主题字段详情 */}
+      <Dialog
+        open={subjectDialog.open}
+        onClose={() => setSubjectDialog({ open: false, cert: null })}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>证书主题：{subjectDialog.cert?.name}</DialogTitle>
+        <DialogContent>
+          {parseSubject(subjectDialog.cert?.subject).length === 0 ? (
+            <Typography variant="body2">-</Typography>
+          ) : (
+            parseSubject(subjectDialog.cert?.subject).map((f, i) => (
+              <Typography
+                key={i}
+                variant="body2"
+                sx={{ fontFamily: 'monospace', wordBreak: 'break-all', marginBottom: 0.5 }}
+              >
+                {f.key ? `${f.key} = ${f.value}` : f.value}
+              </Typography>
+            ))
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setSubjectDialog({ open: false, cert: null })}>关闭</Button>
         </DialogActions>
       </Dialog>
 
