@@ -2,6 +2,7 @@ package api
 
 import (
 	"crypto/x509"
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -123,13 +124,97 @@ func (a *App) ListCertificateHandler(c *gin.Context, user *models.User) {
 	})
 }
 
-// certDetail 证书详情响应：在完整证书记录基础上补充 has_key 标记（模型方法不会被 JSON 序列化）。
-type certDetail struct {
-	models.Certificate
-	HasKey bool `json:"has_key"`
+// certDetailInfo 证书详情响应：不含证书/私钥本体，仅返回展示所需的详细信息。
+type certDetailInfo struct {
+	ID              uint   `json:"id"`
+	Name            string `json:"name"`
+	Type            uint   `json:"type"`
+	ParentID        uint   `json:"parent_id"`
+	KeyType         string `json:"key_type"`
+	HasKey          bool   `json:"has_key"`
+	SerialNumber    string `json:"serial_number"`
+	Subject         string `json:"subject"`
+	Issuer          string `json:"issuer"`
+	CommonName      string `json:"common_name"`
+	NotBefore       int64  `json:"not_before"`
+	NotAfter        int64  `json:"not_after"`
+	CertSHA256      string `json:"cert_sha256"`
+	PublicKeySHA256 string `json:"public_key_sha256"`
+	Description     string `json:"description"`
+	CreatedAt       int64  `json:"created_at"`
 }
 
-// GetCertificateHandler 获取证书完整内容（含证书与私钥 PEM）。
+// formatFingerprint 把小写十六进制指纹格式化为冒号分隔的大写形式。
+func formatFingerprint(rawHex string) string {
+	if rawHex == "" {
+		return ""
+	}
+	upper := strings.ToUpper(rawHex)
+	parts := make([]string, 0, len(upper)/2)
+	for i := 0; i+2 <= len(upper); i += 2 {
+		parts = append(parts, upper[i:i+2])
+	}
+	return strings.Join(parts, ":")
+}
+
+// logCertificateEvent 记录证书操作审计事件（certificate_events 表），事件内容包含证书 CN 与 SHA-256 指纹。
+// server 非空时表示该事件与某服务器相关（如服务器引用证书）。
+func (a *App) logCertificateEvent(c *gin.Context, eventType int, action string, cert *models.Certificate, server *models.Server) {
+	cn := ""
+	if parsed, err := certutil.ParseCertificate(cert.Cert); err == nil {
+		cn = parsed.Subject.CommonName
+	}
+	fp := ""
+	if raw, err := certutil.FingerprintSHA256(cert.Cert); err == nil {
+		fp = formatFingerprint(raw)
+	}
+	event := &models.CertificateEvent{
+		EventType:  eventType,
+		EventTime:  uint64(time.Now().Unix()),
+		RealIPAddr: c.ClientIP(),
+		EventData:  fmt.Sprintf("操作=%s 证书名称=%s CN=%s 指纹=%s", action, cert.Name, cn, fp),
+		CertID:     cert.ID,
+		CertName:   cert.Name,
+	}
+	if server != nil {
+		event.ServerID = server.ID
+		event.ServerName = server.Name
+		event.EventData += fmt.Sprintf(" 服务器=%s(id=%d)", server.Name, server.ID)
+	}
+	if err := a.daoManager.CreateCertificateEvent(event); err != nil {
+		log.Printf("记录证书审计事件失败: %v", err)
+	}
+}
+
+func certDetailFromModel(cert *models.Certificate) certDetailInfo {
+	info := certDetailInfo{
+		ID:           cert.ID,
+		Name:         cert.Name,
+		Type:         cert.Type,
+		ParentID:     cert.ParentID,
+		KeyType:      cert.KeyType,
+		HasKey:       cert.HasKey(),
+		SerialNumber: cert.SerialNumber,
+		Subject:      cert.Subject,
+		Issuer:       cert.Issuer,
+		NotBefore:    cert.NotBefore,
+		NotAfter:     cert.NotAfter,
+		Description:  cert.Description,
+		CreatedAt:    cert.CreatedAt,
+	}
+	if parsed, err := certutil.ParseCertificate(cert.Cert); err == nil {
+		info.CommonName = parsed.Subject.CommonName
+	}
+	if fp, err := certutil.FingerprintSHA256(cert.Cert); err == nil {
+		info.CertSHA256 = formatFingerprint(fp)
+	}
+	if fp, err := certutil.PublicKeySHA256(cert.Cert); err == nil {
+		info.PublicKeySHA256 = formatFingerprint(fp)
+	}
+	return info
+}
+
+// GetCertificateHandler 获取证书详细信息（不含证书与私钥本体）。
 func (a *App) GetCertificateHandler(c *gin.Context, user *models.User) {
 	id, err := strconv.ParseUint(c.DefaultQuery("id", ""), 10, 32)
 	if err != nil {
@@ -144,8 +229,84 @@ func (a *App) GetCertificateHandler(c *gin.Context, user *models.User) {
 	c.JSON(200, gin.H{
 		"result": "success",
 		"error":  nil,
-		"data":   certDetail{Certificate: *cert, HasKey: cert.HasKey()},
+		"data":   certDetailFromModel(cert),
 	})
+}
+
+// sanitizeFilePart 清理下载文件名中的单个片段。
+func sanitizeFilePart(s, fallback string) string {
+	s = unsafeFileNameChars.ReplaceAllString(strings.TrimSpace(s), "_")
+	s = strings.Trim(s, "_")
+	if len(s) > 40 {
+		s = s[:40]
+	}
+	if s == "" {
+		s = fallback
+	}
+	return s
+}
+
+// certDownloadFileName 生成下载文件名：<名称>-<CN>-<哈希>.<ext>。
+func certDownloadFileName(cert *models.Certificate, ext string) string {
+	cn := ""
+	if parsed, err := certutil.ParseCertificate(cert.Cert); err == nil {
+		cn = parsed.Subject.CommonName
+	}
+	hash := "nohash"
+	if fp, err := certutil.FingerprintSHA256(cert.Cert); err == nil && fp != "" {
+		if len(fp) > 16 {
+			fp = fp[:16]
+		}
+		hash = fp
+	}
+	return fmt.Sprintf("%s-%s-%s.%s",
+		sanitizeFilePart(cert.Name, "cert"),
+		sanitizeFilePart(cn, "ca"),
+		hash,
+		ext,
+	)
+}
+
+// downloadCertFile 输出证书或私钥文件下载。
+func (a *App) downloadCertFile(c *gin.Context, wantKey bool) {
+	id, err := strconv.ParseUint(c.DefaultQuery("id", ""), 10, 32)
+	if err != nil {
+		c.JSON(400, gin.H{"result": "failed", "error": "参数 id 必须是 int 类型"})
+		return
+	}
+	cert, err := a.daoManager.GetCertificateByID(uint(id))
+	if err != nil {
+		c.JSON(404, gin.H{"result": "failed", "error": "证书不存在"})
+		return
+	}
+	ext := "cert"
+	content := cert.Cert
+	eventType := models.CERT_EVENT_TYPE_DOWNLOAD_CERT
+	action := "下载证书"
+	if wantKey {
+		ext = "key"
+		eventType = models.CERT_EVENT_TYPE_DOWNLOAD_KEY
+		action = "下载私钥"
+		if !cert.HasKey() {
+			c.JSON(404, gin.H{"result": "failed", "error": "该证书没有私钥"})
+			return
+		}
+		content = cert.Key
+	}
+	fileName := certDownloadFileName(cert, ext)
+	a.logCertificateEvent(c, eventType, action, cert, nil)
+	c.Header("Content-Disposition", "attachment; filename=\""+fileName+"\"")
+	c.Data(200, "application/x-pem-file", []byte(content))
+}
+
+// DownloadCertificateHandler 下载证书 PEM。
+func (a *App) DownloadCertificateHandler(c *gin.Context, user *models.User) {
+	a.downloadCertFile(c, false)
+}
+
+// DownloadCertificateKeyHandler 下载私钥 PEM。
+func (a *App) DownloadCertificateKeyHandler(c *gin.Context, user *models.User) {
+	a.downloadCertFile(c, true)
 }
 
 // ParseCertificateHandler 解析一段 PEM 证书（不保存），用于前端展示“手动填写”证书的信息。
@@ -246,6 +407,7 @@ func (a *App) GenerateCAHandler(c *gin.Context, user *models.User) {
 		c.JSON(500, gin.H{"result": "failed", "error": err.Error()})
 		return
 	}
+	a.logCertificateEvent(c, models.CERT_EVENT_TYPE_CREATE, "生成CA", cert, nil)
 	c.JSON(200, gin.H{"result": "success", "error": nil, "data": toCertListItem(cert)})
 }
 
@@ -310,6 +472,7 @@ func (a *App) SignCertificateHandler(c *gin.Context, user *models.User) {
 		c.JSON(500, gin.H{"result": "failed", "error": err.Error()})
 		return
 	}
+	a.logCertificateEvent(c, models.CERT_EVENT_TYPE_SIGN, "签发证书", cert, nil)
 	c.JSON(200, gin.H{"result": "success", "error": nil, "data": toCertListItem(cert)})
 }
 
@@ -398,6 +561,7 @@ func (a *App) ImportCertificateHandler(c *gin.Context, user *models.User) {
 		c.JSON(500, gin.H{"result": "failed", "error": err.Error()})
 		return
 	}
+	a.logCertificateEvent(c, models.CERT_EVENT_TYPE_IMPORT, "导入证书", cert, nil)
 	c.JSON(200, gin.H{"result": "success", "error": nil, "data": toCertListItem(cert)})
 }
 
@@ -466,11 +630,13 @@ func (a *App) DeleteCertificateHandler(c *gin.Context, user *models.User) {
 			c.JSON(500, gin.H{"result": "failed", "error": err.Error()})
 			return
 		}
+		a.logCertificateEvent(c, models.CERT_EVENT_TYPE_DELETE, "删除证书(随CA级联)", child, nil)
 	}
 	if err := a.daoManager.DeleteCertificate(cert.ID); err != nil {
 		c.JSON(500, gin.H{"result": "failed", "error": err.Error()})
 		return
 	}
+	a.logCertificateEvent(c, models.CERT_EVENT_TYPE_DELETE, "删除证书", cert, nil)
 	c.JSON(200, gin.H{"result": "success", "error": nil})
 }
 
@@ -584,4 +750,41 @@ func (a *App) resolvedServerModel(server *models.Server) *models.Server {
 	resolved.Cert = a.resolveCertReference(server.Cert)
 	resolved.Key = a.resolveCertReference(server.Key)
 	return &resolved
+}
+
+// certRefIDs 返回若干字段中所有 cert-stor 引用的证书 id（去重，保持出现顺序）。
+func certRefIDs(values ...string) []uint {
+	seen := make(map[uint]bool)
+	var ids []uint
+	for _, value := range values {
+		if id, ok := certRefID(value); ok && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// validateCertReferences 校验服务器 CA/Cert/Key 字段中的 cert-stor:<id>/cert|key 引用是否合法且存在。
+// 非引用值（手动填写的 PEM）直接跳过。
+func (a *App) validateCertReferences(values ...string) error {
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if !strings.HasPrefix(trimmed, models.CERT_REF_PREFIX) {
+			continue
+		}
+		rest := strings.TrimPrefix(trimmed, models.CERT_REF_PREFIX)
+		parts := strings.SplitN(rest, "/", 2)
+		if len(parts) != 2 || (parts[1] != "cert" && parts[1] != "key") {
+			return fmt.Errorf("证书引用格式无效: %s（应为 cert-stor:<id>/cert 或 cert-stor:<id>/key）", trimmed)
+		}
+		id, err := strconv.ParseUint(parts[0], 10, 32)
+		if err != nil || id == 0 {
+			return fmt.Errorf("证书引用 ID 无效: %s", trimmed)
+		}
+		if _, err := a.daoManager.GetCertificateByID(uint(id)); err != nil {
+			return fmt.Errorf("证书引用不存在: 引用的证书 id=%d 不存在，请重新选择", id)
+		}
+	}
+	return nil
 }

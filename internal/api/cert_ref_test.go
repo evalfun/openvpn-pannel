@@ -79,6 +79,35 @@ func TestResolveCertReferenceWritesFiles(t *testing.T) {
 	}
 }
 
+func TestValidateCertReferences(t *testing.T) {
+	app, dm, _ := newTestApp(t)
+	pair, err := certutil.GenerateCA(certutil.CertOptions{CommonName: "Ref CA", Key: certutil.KeyOptions{KeyType: certutil.KeyTypeRSA, RSABits: 2048}})
+	if err != nil {
+		t.Fatalf("generate CA: %v", err)
+	}
+	cert := &models.Certificate{Name: "ref-ca", Type: models.CERT_TYPE_CA, Cert: pair.CertPEM, Key: pair.KeyPEM, KeyType: pair.KeyType}
+	if err := dm.CreateCertificate(cert); err != nil {
+		t.Fatalf("create cert: %v", err)
+	}
+
+	literal := "-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----\n"
+	if err := app.validateCertReferences(literal, "", "not-a-ref"); err != nil {
+		t.Fatalf("literal values should be skipped, got %v", err)
+	}
+	if err := app.validateCertReferences(models.CERT_REF_PREFIX+"1/cert", models.CERT_REF_PREFIX+"1/key"); err != nil {
+		t.Fatalf("existing references should pass, got %v", err)
+	}
+	if err := app.validateCertReferences(models.CERT_REF_PREFIX + "999/cert"); err == nil {
+		t.Fatalf("missing reference should be rejected")
+	}
+	if err := app.validateCertReferences(models.CERT_REF_PREFIX + "1/foo"); err == nil {
+		t.Fatalf("invalid reference part should be rejected")
+	}
+	if err := app.validateCertReferences(models.CERT_REF_PREFIX + "abc/cert"); err == nil {
+		t.Fatalf("invalid reference id should be rejected")
+	}
+}
+
 func TestResolveCertReferencePassthroughAndMissing(t *testing.T) {
 	app, _, _ := newTestApp(t)
 	literal := "-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----\n"
@@ -93,25 +122,43 @@ func TestResolveCertReferencePassthroughAndMissing(t *testing.T) {
 	}
 }
 
-func TestCertDetailHasKeyJSON(t *testing.T) {
+func TestCertDetailOmitsSecretAndHasKeyJSON(t *testing.T) {
 	withKey := &models.Certificate{Name: "ca", Type: models.CERT_TYPE_CA, Cert: "CERT", Key: "KEY"}
-	raw, err := json.Marshal(certDetail{Certificate: *withKey, HasKey: withKey.HasKey()})
+	raw, err := json.Marshal(certDetailFromModel(withKey))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 	if !strings.Contains(string(raw), `"has_key":true`) {
 		t.Fatalf("expected has_key=true in JSON, got %s", raw)
 	}
-	if !strings.Contains(string(raw), `"key":"KEY"`) {
-		t.Fatalf("expected key content in JSON, got %s", raw)
+	if strings.Contains(string(raw), `"key":"KEY"`) || strings.Contains(string(raw), `"cert":"CERT"`) {
+		t.Fatalf("detail must not contain cert/key body, got %s", raw)
 	}
 
 	noKey := &models.Certificate{Name: "ca2", Type: models.CERT_TYPE_CA, Cert: "CERT"}
-	raw, err = json.Marshal(certDetail{Certificate: *noKey, HasKey: noKey.HasKey()})
+	raw, err = json.Marshal(certDetailFromModel(noKey))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 	if !strings.Contains(string(raw), `"has_key":false`) {
 		t.Fatalf("expected has_key=false in JSON, got %s", raw)
+	}
+}
+
+func TestFormatFingerprint(t *testing.T) {
+	if got := formatFingerprint("a1b2c3"); got != "A1:B2:C3" {
+		t.Fatalf("unexpected fingerprint format: %q", got)
+	}
+	if got := formatFingerprint(""); got != "" {
+		t.Fatalf("empty fingerprint should stay empty, got %q", got)
+	}
+}
+
+func TestSanitizeFilePart(t *testing.T) {
+	if got := sanitizeFilePart("  my cert/name  ", "cert"); got != "my_cert_name" {
+		t.Fatalf("unexpected sanitize result: %q", got)
+	}
+	if got := sanitizeFilePart("", "ca"); got != "ca" {
+		t.Fatalf("empty should fall back, got %q", got)
 	}
 }

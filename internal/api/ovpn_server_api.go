@@ -63,6 +63,14 @@ func (a *App) CreateOpenVPNServerHandler(c *gin.Context, user *models.User) {
 		return
 	}
 
+	if err := a.validateCertReferences(param.CA, param.Cert, param.Key); err != nil {
+		c.JSON(400, gin.H{
+			"result": "failed",
+			"error":  err.Error(),
+		})
+		return
+	}
+
 	serverModel := &models.Server{
 		Name:              param.Name,
 		Local:             param.Local,
@@ -92,6 +100,11 @@ func (a *App) CreateOpenVPNServerHandler(c *gin.Context, user *models.User) {
 			"error":  err.Error(),
 		})
 		return
+	}
+	for _, id := range certRefIDs(param.CA, param.Cert, param.Key) {
+		if cert, err := a.daoManager.GetCertificateByID(id); err == nil {
+			a.logCertificateEvent(c, models.CERT_EVENT_TYPE_SERVER_REFERENCE, "服务器引用证书", cert, serverModel)
+		}
 	}
 	c.JSON(200, gin.H{
 		"result": "success",
@@ -222,6 +235,22 @@ func (a *App) UpdateOpenVPNServerHandler(c *gin.Context, user *models.User) {
 		return
 	}
 
+	if err := a.validateCertReferences(param.CA, param.Cert, param.Key); err != nil {
+		c.JSON(400, gin.H{
+			"result": "failed",
+			"error":  err.Error(),
+		})
+		return
+	}
+
+	// 更新前记录已引用的证书，仅对新增的引用记录事件
+	oldRefIDs := make(map[uint]bool)
+	if oldServer, err := a.daoManager.GetOpenVPNServerByID(param.ID); err == nil {
+		for _, id := range certRefIDs(oldServer.CA, oldServer.Cert, oldServer.Key) {
+			oldRefIDs[id] = true
+		}
+	}
+
 	serverModel := &models.Server{
 		ID:                param.ID,
 		Name:              param.Name,
@@ -252,6 +281,14 @@ func (a *App) UpdateOpenVPNServerHandler(c *gin.Context, user *models.User) {
 			"error":  err.Error(),
 		})
 		return
+	}
+	for _, id := range certRefIDs(param.CA, param.Cert, param.Key) {
+		if oldRefIDs[id] {
+			continue
+		}
+		if cert, err := a.daoManager.GetCertificateByID(id); err == nil {
+			a.logCertificateEvent(c, models.CERT_EVENT_TYPE_SERVER_REFERENCE, "服务器引用证书", cert, serverModel)
+		}
 	}
 	c.JSON(200, gin.H{
 		"result": "success",

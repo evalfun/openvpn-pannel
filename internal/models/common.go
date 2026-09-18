@@ -29,5 +29,5 @@ func ConnectDB(config *config.Config) (*gorm.DB, error) {
 func MigrateDB(db *gorm.DB) error {
 	return db.AutoMigrate(&Server{}, &ServerRoute{}, &ConnectedClientInfoRecord{},
 		&ClientConfig{}, &User{}, &Group{}, &UserGroup{}, &AddedServerACLRecord{},
-		&GroupACL{}, &ServerPermission{}, &AppResourceRecord{}, &ServerEvent{}, &Certificate{})
+		&GroupACL{}, &ServerPermission{}, &AppResourceRecord{}, &ServerEvent{}, &Certificate{}, &CertificateEvent{})
 }

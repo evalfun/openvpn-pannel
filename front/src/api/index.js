@@ -60,8 +60,12 @@ export const certificateAPI = {
     return client.get(`/certificate/list${qs ? `?${qs}` : ''}`);
   },
 
-  // 获取证书完整内容
+  // 获取证书详细信息（不含证书/私钥本体）
   getInfo: (id) => client.get(`/certificate/info?id=${id}`),
+
+  // 下载证书 / 私钥（返回完整响应以便读取 Content-Disposition 文件名）
+  downloadCert: (id) => client.get(`/certificate/download_cert?id=${id}`, { responseType: 'blob' }),
+  downloadKey: (id) => client.get(`/certificate/download_key?id=${id}`, { responseType: 'blob' }),
 
   // 解析手动填写的 PEM 证书（不保存），可选传入私钥校验是否匹配
   parse: (cert, key = '') => client.post('/certificate/parse', { cert, key }),
@@ -77,6 +81,20 @@ export const certificateAPI = {
 
   // 删除证书
   delete: (id) => client.post('/certificate/delete', { id }),
+
+  // 证书操作事件（独立于服务器事件）
+  listEvents: (params = {}) => {
+    const query = new URLSearchParams();
+    if (params.type) query.append('type', params.type);
+    if (params.query) query.append('query', params.query);
+    if (params.start) query.append('start', params.start);
+    if (params.end) query.append('end', params.end);
+    if (params.page) query.append('page', params.page);
+    if (params.pageSize) query.append('page_size', params.pageSize);
+    const qs = query.toString();
+    return client.get(`/certificate/event/list${qs ? `?${qs}` : ''}`);
+  },
+  clearEvents: () => client.post('/certificate/event/clear'),
 
   // 生成 DH 参数
   generateDH: (bits) => client.post('/certificate/dh/generate', { bits }),

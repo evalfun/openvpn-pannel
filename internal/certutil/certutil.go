@@ -10,9 +10,11 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -356,6 +358,30 @@ func ParseCertificate(pemStr string) (*x509.Certificate, error) {
 		return nil, fmt.Errorf("PEM 块类型为 %s，不是证书", block.Type)
 	}
 	return x509.ParseCertificate(block.Bytes)
+}
+
+// FingerprintSHA256 返回证书 DER 编码的 SHA-256 指纹（小写十六进制，不带分隔符）。
+func FingerprintSHA256(pemStr string) (string, error) {
+	cert, err := ParseCertificate(pemStr)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(cert.Raw)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// PublicKeySHA256 返回证书公钥 SPKI(DER) 的 SHA-256 指纹（小写十六进制，不带分隔符）。
+func PublicKeySHA256(pemStr string) (string, error) {
+	cert, err := ParseCertificate(pemStr)
+	if err != nil {
+		return "", err
+	}
+	spki, err := x509.MarshalPKIXPublicKey(cert.PublicKey)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(spki)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // ParsePrivateKey 解析 PEM 私钥（支持 PKCS#1 / SEC1 / PKCS#8）。

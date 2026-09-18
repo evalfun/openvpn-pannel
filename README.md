@@ -32,15 +32,24 @@
 ## 快速开始
 
 ```bash
-# 1) 初始化数据库（首次部署或升级后执行）
+# 1) 生成一份示例配置
+./openvpn-pannel democonfig > config.json
+
+# 2) 修改config.json配置文件
+
+# 3) 初始化数据库（首次部署、或升级版本后执行）
 ./openvpn-pannel -config=config.json migratedb
 
-# 2) 创建管理员并加入 admin 组（只有 admin 组能登录面板）
-./openvpn-pannel -config=config.json createuser admin 'ADMIN_PASSWORD' 管理员
+# 4) 创建管理员用户：  用户名  密码  描述
+./openvpn-pannel -config=config.json createuser admin 'ADMIN_PASSWORD_111222333' 管理员
+
+# 5) 创建 admin 用户组（名称必须为 admin）
 ./openvpn-pannel -config=config.json creategroup admin
+
+# 6) 把管理员加入 admin 组
 ./openvpn-pannel -config=config.json addusertogroup admin admin
 
-# 3) 启动
+# 7) 启动面板
 ./openvpn-pannel -config=config.json run
 ```
 
@@ -120,9 +129,7 @@
 
 服务器编辑处，CA 证书 / 服务器证书 / 服务器私钥既可**直接粘贴 PEM**，也可从证书管理**选择引用**；
 
-**客户端配置导出**：在“服务器管理”点“导出客户端配置”，选择服务器与客户端证书、填写服务器地址与端口，
-即可下载内联 `<ca>/<cert>/<key>/<tls-auth>` 的单个 `.ovpn` 文件；地址与端口按服务器实例保存，下次自动带出。
-导出内容由资源 `client-config` 渲染，可在“资源管理”中修改模板。
+**客户端配置导出**：在“服务器管理”点“导出客户端配置”，即可下载内联 `<ca>/<cert>/<key>/<tls-auth>` 的单个 `.ovpn` 文件。
 
 ## 部署
 

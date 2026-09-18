@@ -7,6 +7,7 @@ import Users from './pages/Users';
 import Groups from './pages/Groups';
 import Resources from './pages/Resources';
 import Certificates from './pages/Certificates';
+import CertificateEvents from './pages/CertificateEvents';
 import Logs from './pages/Logs';
 import ProtectedRoute from './components/ProtectedRoute';
 import Help from './pages/Help';
@@ -38,6 +39,7 @@ function App() {
           >
             <Route path="servers" element={<ServerManagement />} />
             <Route path="certificates" element={<Certificates />} />
+            <Route path="certificates/events" element={<CertificateEvents />} />
             <Route path="certificates/:caId" element={<Certificates />} />
             <Route path="users" element={<Users />} />
             <Route path="groups" element={<Groups />} />

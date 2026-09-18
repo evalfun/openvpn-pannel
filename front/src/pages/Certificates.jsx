@@ -9,7 +9,7 @@ import {
   TableContainer,
   TableHead,
   TableRow,
-  TablePagination,
+  Pagination,
   Button,
   Dialog,
   DialogTitle,
@@ -26,6 +26,11 @@ import {
   MenuItem,
   IconButton,
   Tooltip,
+  Card,
+  CardContent,
+  CardActions,
+  useMediaQuery,
+  useTheme,
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -34,6 +39,8 @@ import {
   Delete as DeleteIcon,
   Visibility as ViewIcon,
   Settings as ManageIcon,
+  Download as DownloadIcon,
+  History as HistoryIcon,
 } from '@mui/icons-material';
 import { useNavigate, useParams } from 'react-router-dom';
 import { certificateAPI } from '../api';
@@ -79,6 +86,50 @@ const subjectCN = (subject) => {
 };
 
 const subjectOthers = (subject) => parseSubject(subject).filter((f) => f.key !== 'CN');
+
+// 主题/颁发者多行显示文本
+const subjectLines = (subject) =>
+  parseSubject(subject)
+    .map((f) => (f.key ? `${f.key} = ${f.value}` : f.value))
+    .join('\n');
+
+// 从 Content-Disposition 响应头解析文件名
+const filenameFromDisposition = (disposition, fallback) => {
+  if (!disposition) return fallback;
+  const match = /filename\*?=(?:UTF-8'')?["']?([^"';]+)/i.exec(disposition);
+  if (!match) return fallback;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
+};
+
+const saveBlobResponse = (res, fallbackName) => {
+  const blob = res.data instanceof Blob ? res.data : new Blob([res.data]);
+  const fileName = filenameFromDisposition(res.headers?.['content-disposition'], fallbackName);
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+};
+
+const blobErrorMessage = async (err, fallback) => {
+  const data = err.response?.data;
+  if (data instanceof Blob) {
+    try {
+      const parsed = JSON.parse(await data.text());
+      if (parsed?.error) return parsed.error;
+    } catch {
+      // 忽略解析失败
+    }
+  }
+  return err.response?.data?.error || err.message || fallback;
+};
 
 const initialKeyOptions = { key_type: 'rsa', rsa_bits: 2048, ec_curve: 'P256' };
 
@@ -129,6 +180,8 @@ const Certificates = () => {
   const navigate = useNavigate();
   const { caId } = useParams();
   const isLevel2 = !!caId;
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
 
   const [certs, setCerts] = useState([]);
   const [caCert, setCaCert] = useState(null);
@@ -287,54 +340,157 @@ const Certificates = () => {
     }
   };
 
+  const handleDownload = async (cert, kind) => {
+    if (!cert) return;
+    try {
+      const res = kind === 'key'
+        ? await certificateAPI.downloadKey(cert.id)
+        : await certificateAPI.downloadCert(cert.id);
+      saveBlobResponse(res, `${cert.name || 'cert'}.${kind === 'key' ? 'key' : 'cert'}`);
+    } catch (err) {
+      setError('下载失败：' + (await blobErrorMessage(err, '下载失败')));
+    }
+  };
+
   const caHasKey = !!caCert && (caCert.has_key ?? !!String(caCert.key || '').trim());
   const canSign = !isLevel2 || caHasKey;
 
+  // 移动端卡片视图
+  const MobileCertCard = ({ cert }) => (
+    <Card sx={{ marginBottom: 2 }}>
+      <CardContent>
+        <Typography variant="h6" sx={{ marginBottom: 1, wordBreak: 'break-all' }}>
+          {cert.name}
+        </Typography>
+        <Stack spacing={1}>
+          {isLevel2 && (
+            <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+              <Typography variant="body2" color="textSecondary">
+                类型:
+              </Typography>
+              <Typography variant="body2">{certTypeLabel(cert.type)}</Typography>
+            </Box>
+          )}
+          <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+            <Typography variant="body2" color="textSecondary">
+              主题 (CN):
+            </Typography>
+            <Box
+              component="span"
+              onClick={() => setSubjectDialog({ open: true, cert })}
+              sx={{
+                cursor: 'pointer',
+                textDecoration: 'underline dotted',
+                wordBreak: 'break-all',
+                textAlign: 'right',
+              }}
+            >
+              {subjectCN(cert.subject) || '-'}
+            </Box>
+          </Box>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+            <Typography variant="body2" color="textSecondary">
+              密钥:
+            </Typography>
+            {cert.has_key ? (
+              <Chip size="small" color="success" label={cert.key_type || '已有私钥'} />
+            ) : (
+              <Chip size="small" color="default" label="无私钥" />
+            )}
+          </Box>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+            <Typography variant="body2" color="textSecondary">
+              到期时间:
+            </Typography>
+            <Typography variant="body2" sx={{ textAlign: 'right' }}>
+              {formatTime(cert.not_after)}
+            </Typography>
+          </Box>
+        </Stack>
+      </CardContent>
+      <CardActions sx={{ flexWrap: 'wrap', gap: 1 }}>
+        <Button size="small" startIcon={<ViewIcon />} onClick={() => handleView(cert)} variant="outlined">
+          查看
+        </Button>
+        {!isLevel2 && (
+          <Button
+            size="small"
+            startIcon={<ManageIcon />}
+            onClick={() => navigate(`/dashboard/certificates/${cert.id}`)}
+            variant="outlined"
+          >
+            管理
+          </Button>
+        )}
+        <Button
+          size="small"
+          color="error"
+          startIcon={<DeleteIcon />}
+          onClick={() => handleDelete(cert)}
+          variant="outlined"
+        >
+          删除
+        </Button>
+      </CardActions>
+    </Card>
+  );
+
   return (
     <Box sx={{ width: '100%', padding: { xs: 1, sm: 2, md: 3 } }}>
-      <Stack direction="row" alignItems="center" spacing={1} sx={{ marginBottom: 2 }}>
-        {isLevel2 && (
-          <IconButton onClick={() => navigate('/dashboard/certificates')}>
-            <ArrowBackIcon />
-          </IconButton>
-        )}
-        <Typography variant="h5">
-          {isLevel2 ? `管理证书 - ${caCert?.name || ''}` : '证书管理'}
-        </Typography>
-        <Box sx={{ flex: 1 }} />
-        {!isLevel2 && (
-          <>
-            <Button variant="contained" startIcon={<AddIcon />} onClick={() => { resetForm(); setGenCADialog(true); }}>
-              生成新 CA
-            </Button>
-            <Button variant="outlined" startIcon={<UploadIcon />} onClick={() => { setDialogError(''); setImportDialog({ open: true, certType: CERT_TYPE_CA }); }}>
-              导入 CA
-            </Button>
-          </>
-        )}
-        {isLevel2 && (
-          <>
-            <Button
-              variant="contained"
-              startIcon={<AddIcon />}
-              disabled={!canSign}
-              onClick={() => { resetForm(); setSignDialog({ open: true, certType: CERT_TYPE_SERVER }); }}
-            >
-              签发服务器证书
-            </Button>
-            <Button
-              variant="contained"
-              startIcon={<AddIcon />}
-              disabled={!canSign}
-              onClick={() => { resetForm(); setSignDialog({ open: true, certType: CERT_TYPE_CLIENT }); }}
-            >
-              签发客户端证书
-            </Button>
-            <Button variant="outlined" startIcon={<UploadIcon />} onClick={() => { setDialogError(''); setImportDialog({ open: true, certType: CERT_TYPE_SERVER }); }}>
-              导入证书
-            </Button>
-          </>
-        )}
+      <Stack
+        direction="row"
+        alignItems="center"
+        spacing={1}
+        sx={{ marginBottom: 2, flexWrap: 'wrap', rowGap: 1 }}
+      >
+        <Stack direction="row" alignItems="center" spacing={1} sx={{ flexGrow: 1, minWidth: 200 }}>
+          {isLevel2 && (
+            <IconButton onClick={() => navigate('/dashboard/certificates')}>
+              <ArrowBackIcon />
+            </IconButton>
+          )}
+          <Typography variant="h5" sx={{ wordBreak: 'break-word' }}>
+            {isLevel2 ? `管理证书 - ${caCert?.name || ''}` : '证书管理'}
+          </Typography>
+        </Stack>
+        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, justifyContent: 'flex-end' }}>
+          {!isLevel2 && (
+            <>
+              <Button variant="contained" startIcon={<AddIcon />} onClick={() => { resetForm(); setGenCADialog(true); }}>
+                生成新 CA
+              </Button>
+              <Button variant="outlined" startIcon={<UploadIcon />} onClick={() => { setDialogError(''); setImportDialog({ open: true, certType: CERT_TYPE_CA }); }}>
+                导入 CA
+              </Button>
+            </>
+          )}
+          {isLevel2 && (
+            <>
+              <Button
+                variant="contained"
+                startIcon={<AddIcon />}
+                disabled={!canSign}
+                onClick={() => { resetForm(); setSignDialog({ open: true, certType: CERT_TYPE_SERVER }); }}
+              >
+                签发服务器证书
+              </Button>
+              <Button
+                variant="contained"
+                startIcon={<AddIcon />}
+                disabled={!canSign}
+                onClick={() => { resetForm(); setSignDialog({ open: true, certType: CERT_TYPE_CLIENT }); }}
+              >
+                签发客户端证书
+              </Button>
+              <Button variant="outlined" startIcon={<UploadIcon />} onClick={() => { setDialogError(''); setImportDialog({ open: true, certType: CERT_TYPE_SERVER }); }}>
+                导入证书
+              </Button>
+            </>
+          )}
+          <Button variant="outlined" startIcon={<HistoryIcon />} onClick={() => navigate('/dashboard/certificates/events')}>
+            操作事件
+          </Button>
+        </Box>
       </Stack>
 
       {isLevel2 && caCert && !caHasKey && (
@@ -357,6 +513,16 @@ const Certificates = () => {
         {loading ? (
           <Box sx={{ display: 'flex', justifyContent: 'center', padding: 3 }}>
             <CircularProgress />
+          </Box>
+        ) : isMobile ? (
+          <Box>
+            {certs.length === 0 ? (
+              <Box sx={{ padding: 3, textAlign: 'center' }}>
+                <Typography color="textSecondary">暂无证书</Typography>
+              </Box>
+            ) : (
+              certs.map((cert) => <MobileCertCard key={cert.id} cert={cert} />)
+            )}
           </Box>
         ) : (
           <TableContainer>
@@ -441,49 +607,106 @@ const Certificates = () => {
             </Table>
           </TableContainer>
         )}
-        <TablePagination
-          component="div"
-          count={total}
-          page={page}
-          onPageChange={(e, newPage) => setPage(newPage)}
-          rowsPerPage={pageSize}
-          onRowsPerPageChange={(e) => {
-            setPageSize(parseInt(e.target.value, 10));
-            setPage(0);
-          }}
-          rowsPerPageOptions={[10, 20, 50, 100]}
-          labelRowsPerPage="每页"
-        />
+        <Stack
+          direction="row"
+          spacing={2}
+          alignItems="center"
+          sx={{ marginTop: 1, marginBottom: 1, paddingX: 1, flexWrap: 'wrap', rowGap: 1 }}
+        >
+          <FormControl sx={{ minWidth: 120 }}>
+            <InputLabel>每页数量</InputLabel>
+            <Select
+              value={pageSize}
+              label="每页数量"
+              onChange={(e) => {
+                setPageSize(e.target.value);
+                setPage(0);
+              }}
+            >
+              <MenuItem value={10}>10</MenuItem>
+              <MenuItem value={20}>20</MenuItem>
+              <MenuItem value={50}>50</MenuItem>
+              <MenuItem value={100}>100</MenuItem>
+            </Select>
+          </FormControl>
+          <Typography>总共 {total} 个证书</Typography>
+          <Pagination
+            count={Math.max(1, Math.ceil(total / pageSize))}
+            page={page + 1}
+            onChange={(e, value) => setPage(value - 1)}
+            color="primary"
+          />
+        </Stack>
       </Paper>
 
-      {/* 查看内容 */}
+      {/* 查看详情 */}
       <Dialog open={viewDialog.open} onClose={() => setViewDialog({ open: false, data: null })} maxWidth="md" fullWidth>
-        <DialogTitle>证书内容：{viewDialog.data?.name}</DialogTitle>
-        <DialogContent>
-          <Typography variant="subtitle2" sx={{ marginTop: 1 }}>证书</Typography>
-          <TextField
-            fullWidth
-            multiline
-            rows={8}
-            value={viewDialog.data?.cert || ''}
-            InputProps={{ readOnly: true }}
-            sx={{ '& textarea': { fontFamily: 'monospace', fontSize: 12 } }}
-          />
-          {viewDialog.data?.key && (
-            <>
-              <Typography variant="subtitle2" sx={{ marginTop: 2 }}>私钥</Typography>
-              <TextField
-                fullWidth
-                multiline
-                rows={8}
-                value={viewDialog.data.key}
-                InputProps={{ readOnly: true }}
-                sx={{ '& textarea': { fontFamily: 'monospace', fontSize: 12 } }}
-              />
-            </>
-          )}
+        <DialogTitle>证书详情：{viewDialog.data?.name}</DialogTitle>
+        <DialogContent dividers>
+          {(() => {
+            const d = viewDialog.data;
+            if (!d) return null;
+            const rows = [
+              { label: '名称', value: d.name },
+              { label: '类型', value: certTypeLabel(d.type) },
+              { label: '主题', value: subjectLines(d.subject), pre: true },
+              { label: '颁发者', value: subjectLines(d.issuer), pre: true },
+              { label: '序列号', value: d.serial_number, mono: true },
+              { label: '生效时间', value: formatTime(d.not_before) },
+              { label: '失效时间', value: formatTime(d.not_after) },
+              { label: '证书 SHA-256', value: d.cert_sha256, mono: true },
+              { label: '公钥 SHA-256', value: d.public_key_sha256, mono: true },
+              { label: '密钥', value: d.has_key ? d.key_type || '已有私钥' : '无私钥' },
+              { label: '备注', value: d.description || '-' },
+              { label: '创建时间', value: formatTime(d.created_at) },
+            ];
+            return rows.map((row) => (
+              <Box
+                key={row.label}
+                sx={{
+                  display: 'flex',
+                  flexDirection: isMobile ? 'column' : 'row',
+                  gap: isMobile ? 0.5 : 2,
+                  marginBottom: isMobile ? 1.5 : 1,
+                  alignItems: 'flex-start',
+                }}
+              >
+                <Typography
+                  variant="body2"
+                  color="textSecondary"
+                  sx={{ minWidth: isMobile ? 0 : 120, flexShrink: 0 }}
+                >
+                  {row.label}:
+                </Typography>
+                <Typography
+                  variant="body2"
+                  sx={{
+                    whiteSpace: row.pre ? 'pre-wrap' : 'normal',
+                    wordBreak: 'break-all',
+                    fontFamily: row.mono ? 'monospace' : 'inherit',
+                  }}
+                >
+                  {row.value || '-'}
+                </Typography>
+              </Box>
+            ));
+          })()}
         </DialogContent>
         <DialogActions>
+          <Button
+            startIcon={<DownloadIcon />}
+            onClick={() => handleDownload(viewDialog.data, 'cert')}
+            disabled={!viewDialog.data}
+          >
+            下载证书
+          </Button>
+          <Button
+            startIcon={<DownloadIcon />}
+            onClick={() => handleDownload(viewDialog.data, 'key')}
+            disabled={!viewDialog.data?.has_key}
+          >
+            下载私钥
+          </Button>
           <Button onClick={() => setViewDialog({ open: false, data: null })}>关闭</Button>
         </DialogActions>
       </Dialog>

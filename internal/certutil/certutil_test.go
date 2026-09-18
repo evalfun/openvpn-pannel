@@ -29,6 +29,30 @@ func TestGenerateAndSign(t *testing.T) {
 	}
 }
 
+func TestFingerprints(t *testing.T) {
+	ca, err := GenerateCA(CertOptions{CommonName: "Fingerprint CA", Days: 365, Key: KeyOptions{KeyType: KeyTypeRSA, RSABits: 2048}})
+	if err != nil {
+		t.Fatalf("generate CA: %v", err)
+	}
+	certFP, err := FingerprintSHA256(ca.CertPEM)
+	if err != nil {
+		t.Fatalf("cert fingerprint: %v", err)
+	}
+	if len(certFP) != 64 {
+		t.Fatalf("expected 64 hex chars for cert fingerprint, got %d", len(certFP))
+	}
+	pubFP, err := PublicKeySHA256(ca.CertPEM)
+	if err != nil {
+		t.Fatalf("public key fingerprint: %v", err)
+	}
+	if len(pubFP) != 64 {
+		t.Fatalf("expected 64 hex chars for public key fingerprint, got %d", len(pubFP))
+	}
+	if certFP == pubFP {
+		t.Fatalf("certificate and public key fingerprints should differ")
+	}
+}
+
 func TestValidateSignedByRejectsForeignCA(t *testing.T) {
 	ca1, _ := GenerateCA(CertOptions{CommonName: "CA1", Key: KeyOptions{KeyType: KeyTypeRSA, RSABits: 2048}})
 	ca2, _ := GenerateCA(CertOptions{CommonName: "CA2", Key: KeyOptions{KeyType: KeyTypeRSA, RSABits: 2048}})

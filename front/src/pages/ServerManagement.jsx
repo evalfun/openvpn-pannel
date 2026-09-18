@@ -36,6 +36,7 @@ import {
   Tabs,
   Tab,
   Menu,
+  Autocomplete,
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import RefreshIcon from '@mui/icons-material/Refresh';
@@ -60,6 +61,16 @@ const parseCertRef = (value) => {
   const part = rest.slice(idx + 1);
   if (!id || (part !== 'cert' && part !== 'key')) return null;
   return { id, part };
+};
+
+// 从 "C=CN, ST=..., CN=xxx" 形式的主题中提取 CN
+const subjectCommonName = (subject) => {
+  for (const part of String(subject || '').split(',')) {
+    const idx = part.indexOf('=');
+    if (idx < 0) continue;
+    if (part.slice(0, idx).trim() === 'CN') return part.slice(idx + 1).trim();
+  }
+  return '';
 };
 
 // 证书字段的只读摘要：显示所选证书信息，或手动填写证书的解析结果
@@ -93,10 +104,22 @@ const CertSummary = ({ value, info, manual, kind = 'cert' }) => {
   return <Alert severity={severity} sx={{ marginTop: 0.5, marginBottom: 0.5 }}>{text}</Alert>;
 };
 
+const filenameFromDisposition = (disposition, fallback) => {
+  if (!disposition) return fallback;
+  const match = /filename\*?=(?:UTF-8'')?["']?([^"';]+)/i.exec(disposition);
+  if (!match) return fallback;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
+};
+
 const ServerManagement = () => {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const initializedRef = useRef(false);
+  const loadSeqRef = useRef(0);
   
   const [servers, setServers] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -104,7 +127,7 @@ const ServerManagement = () => {
   const [success, setSuccess] = useState('');
   const [openDialog, setOpenDialog] = useState(false);
   const [editingId, setEditingId] = useState(null);
-  const [actionLoading, setActionLoading] = useState(null); // 记录正在执行的服务器操作 (serverId)
+  const [actionLoading, setActionLoading] = useState(() => new Set()); // 正在执行操作的服务器 id 集合
   const [formData, setFormData] = useState({
     name: '',
     local: '',
@@ -164,6 +187,8 @@ const ServerManagement = () => {
     client_cert_name: '',
     config: '',
   });
+  // 当服务器证书来自证书库时，可选的客户端证书 CN 列表
+  const [clientCertCNs, setClientCertCNs] = useState([]);
   // 添加客户端配置管理专用的提示状态
   const [clientConfigError, setClientConfigError] = useState('');
   const [clientConfigSuccess, setClientConfigSuccess] = useState('');
@@ -211,18 +236,30 @@ const ServerManagement = () => {
   const [dropdownServerId, setDropdownServerId] = useState(null);
 
   const loadServers = async () => {
+    const seq = ++loadSeqRef.current;
     setIsLoading(true);
     setError('');
     try {
       const response = await serverAPI.getServerList();
+      // 丢弃过期的响应，避免并发刷新时旧数据覆盖新数据
+      if (seq !== loadSeqRef.current) return;
       if (response.data.result === 'success') {
         setServers(response.data.data || []);
       }
     } catch (err) {
-      setError('加载服务器列表失败');
+      if (seq === loadSeqRef.current) setError('加载服务器列表失败');
     } finally {
-      setIsLoading(false);
+      if (seq === loadSeqRef.current) setIsLoading(false);
     }
+  };
+
+  const markActionLoading = (serverId, loading) => {
+    setActionLoading((prev) => {
+      const next = new Set(prev);
+      if (loading) next.add(serverId);
+      else next.delete(serverId);
+      return next;
+    });
   };
 
   useEffect(() => {
@@ -342,33 +379,33 @@ const ServerManagement = () => {
 
   const handleStartServer = async (serverId) => {
     try {
-      setActionLoading(serverId);
+      markActionLoading(serverId, true);
       setError('');
       await serverAPI.startServer(serverId);
       setSuccess('服务器启动成功');
-      //setTimeout(() => setSuccess(''), 3000);
+      setServers((prev) => prev.map((s) => (s.id === serverId ? { ...s, running: true } : s)));
       loadServers();
     } catch (err) {
       const errorMsg = err.response?.data?.error || '启动失败';
       setError(errorMsg);
     } finally {
-      setActionLoading(null);
+      markActionLoading(serverId, false);
     }
   };
 
   const handleStopServer = async (serverId) => {
     try {
-      setActionLoading(serverId);
+      markActionLoading(serverId, true);
       setError('');
       await serverAPI.stopServer(serverId);
       setSuccess('服务器停止成功');
-      //setTimeout(() => setSuccess(''), 3000);
+      setServers((prev) => prev.map((s) => (s.id === serverId ? { ...s, running: false } : s)));
       loadServers();
     } catch (err) {
       const errorMsg = err.response?.data?.error || '停止失败';
       setError(errorMsg);
     } finally {
-      setActionLoading(null);
+      markActionLoading(serverId, false);
     }
   };
 
@@ -581,10 +618,11 @@ const ServerManagement = () => {
       }
       const res = await serverAPI.exportClientConfig(payload);
       const blob = new Blob([res.data], { type: 'application/x-openvpn-profile' });
+      const fileName = filenameFromDisposition(res.headers?.['content-disposition'], 'client.ovpn');
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'client.ovpn';
+      a.download = fileName;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -810,6 +848,25 @@ const ServerManagement = () => {
         setClientConfigDialog(true);
         // 保存当前服务器ID，用于后续操作
         setSelectedServer({ id: serverId });
+        setClientCertCNs([]);
+        // 若该服务器的证书来自证书库，加载同 CA 已签发的客户端证书 CN 供选择
+        try {
+          const infoRes = await serverAPI.getServerInfo(serverId);
+          const info = infoRes.data?.data;
+          if (info && parseCertRef(info.cert)) {
+            const caRef = parseCertRef(info.ca);
+            const params = { type: 3, pageSize: 0 };
+            if (caRef) params.parentId = caRef.id;
+            const certRes = await certificateAPI.list(params);
+            const cns = (certRes.data.data || [])
+              .map((c) => subjectCommonName(c.subject))
+              .filter(Boolean);
+            setClientCertCNs([...new Set(cns)]);
+          }
+        } catch (certErr) {
+          // 加载失败时退化为普通输入框，不阻断配置管理
+          setClientCertCNs([]);
+        }
       }
     } catch (err) {
       setError('加载客户端配置失败');
@@ -968,9 +1025,9 @@ const ServerManagement = () => {
             onClick={() => handleStartServer(server.id)}
             variant="contained"
             color="success"
-            disabled={actionLoading === server.id}
+            disabled={actionLoading.has(server.id)}
           >
-            {actionLoading === server.id ? '启动中...' : '启动'}
+            {actionLoading.has(server.id) ? '启动中...' : '启动'}
           </Button>
         ) : (
           <Button
@@ -979,9 +1036,9 @@ const ServerManagement = () => {
             onClick={() => handleStopServer(server.id)}
             variant="contained"
             color="error"
-            disabled={actionLoading === server.id}
+            disabled={actionLoading.has(server.id)}
           >
-            {actionLoading === server.id ? '停止中...' : '停止'}
+            {actionLoading.has(server.id) ? '停止中...' : '停止'}
           </Button>
         )}
         <Button
@@ -1121,9 +1178,9 @@ const ServerManagement = () => {
                           startIcon={<PlayArrowIcon />}
                           onClick={() => handleStartServer(server.id)}
                           variant="outlined"
-                          disabled={actionLoading === server.id}
+                          disabled={actionLoading.has(server.id)}
                         >
-                          {actionLoading === server.id ? '启动中...' : '启动'}
+                          {actionLoading.has(server.id) ? '启动中...' : '启动'}
                         </Button>
                       ) : (
                         <Button
@@ -1132,9 +1189,9 @@ const ServerManagement = () => {
                           onClick={() => handleStopServer(server.id)}
                           variant="outlined"
                           color="error"
-                          disabled={actionLoading === server.id}
+                          disabled={actionLoading.has(server.id)}
                         >
-                          {actionLoading === server.id ? '停止中...' : '停止'}
+                          {actionLoading.has(server.id) ? '停止中...' : '停止'}
                         </Button>
                       )}
                       <Button
@@ -2118,14 +2175,38 @@ push "redirect-gateway def1"'
         </DialogTitle>
         <DialogContent sx={{ paddingTop: 2 }}>
           {configFormError && <Alert severity="error" sx={{ marginBottom: 2 }} onClose={() => setConfigFormError('')}>{configFormError}</Alert>}
-          <TextField
-            fullWidth
-            label="客户端证书名称"
-            value={configFormData.client_cert_name}
-            onChange={(e) => setConfigFormData({ ...configFormData, client_cert_name: e.target.value })}
-            margin="normal"
-            required
-          />
+          {clientCertCNs.length > 0 ? (
+            <Autocomplete
+              freeSolo
+              options={clientCertCNs}
+              value={configFormData.client_cert_name}
+              onChange={(e, newValue) =>
+                setConfigFormData((prev) => ({ ...prev, client_cert_name: newValue || '' }))
+              }
+              onInputChange={(e, newInputValue) =>
+                setConfigFormData((prev) => ({ ...prev, client_cert_name: newInputValue }))
+              }
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  fullWidth
+                  label="客户端证书名称"
+                  margin="normal"
+                  required
+                  helperText="可输入自定义名称，或从该服务器 CA 已签发的客户端证书中选择 CN"
+                />
+              )}
+            />
+          ) : (
+            <TextField
+              fullWidth
+              label="客户端证书名称"
+              value={configFormData.client_cert_name}
+              onChange={(e) => setConfigFormData({ ...configFormData, client_cert_name: e.target.value })}
+              margin="normal"
+              required
+            />
+          )}
           <TextField
             fullWidth
             label="配置内容"

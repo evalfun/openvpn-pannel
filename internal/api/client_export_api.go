@@ -72,6 +72,7 @@ func (a *App) ExportClientConfigHandler(c *gin.Context, user *models.User) {
 	caID, caIsRef := certRefID(server.CA)
 
 	var clientCertPEM, clientKeyPEM, clientCertName string
+	var auditCert *models.Certificate
 	switch {
 	case param.CertID != 0:
 		clientCert, err := a.daoManager.GetCertificateByID(param.CertID)
@@ -91,6 +92,7 @@ func (a *App) ExportClientConfigHandler(c *gin.Context, user *models.User) {
 		clientCertPEM = clientCert.Cert
 		clientKeyPEM = clientCert.Key
 		clientCertName = clientCert.Name
+		auditCert = clientCert
 	case caIsRef:
 		c.JSON(400, gin.H{"result": "failed", "error": "请选择由该服务器 CA 签发的客户端证书"})
 		return
@@ -148,6 +150,11 @@ func (a *App) ExportClientConfigHandler(c *gin.Context, user *models.User) {
 		configContent = strings.TrimRight(configContent, "\n") + "\n\n" + extraConfig + "\n"
 	}
 
+	// 仅当从证书管理选择了客户端证书时才记录审计事件（手动填写的证书不记录）
+	if auditCert != nil {
+		a.logCertificateEvent(c, models.CERT_EVENT_TYPE_CLIENT_REFERENCE, "客户端引用证书", auditCert, server)
+	}
+
 	if param.Save == nil || *param.Save {
 		if err := a.daoManager.UpdateServerExportSetting(server.ID, strings.TrimSpace(param.Host), param.Port, strings.TrimSpace(param.ExtraConfig)); err != nil {
 			// 保存失败不阻断导出，仅记录日志
@@ -155,11 +162,17 @@ func (a *App) ExportClientConfigHandler(c *gin.Context, user *models.User) {
 		}
 	}
 
-	name := sanitizeFileName(server.Name)
-	if clientCertName != "" {
-		name += "-" + sanitizeFileName(clientCertName)
+	// 文件名：服务器名称-服务器IP-端口-客户端证书名称.ovpn
+	certPart := clientCertName
+	if strings.TrimSpace(certPart) == "" {
+		certPart = "client"
 	}
-	fileName := fmt.Sprintf("%s.ovpn", name)
+	fileName := fmt.Sprintf("%s-%s-%d-%s.ovpn",
+		sanitizeFileName(server.Name),
+		sanitizeFileName(strings.TrimSpace(param.Host)),
+		param.Port,
+		sanitizeFileName(certPart),
+	)
 	c.Header("Content-Disposition", `attachment; filename="`+fileName+`"`)
 	c.Data(200, "application/x-openvpn-profile; charset=utf-8", []byte(configContent))
 }
