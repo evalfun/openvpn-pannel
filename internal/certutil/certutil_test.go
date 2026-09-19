@@ -80,13 +80,14 @@ func TestGenerateDHParams(t *testing.T) {
 
 func TestCertSubjectFields(t *testing.T) {
 	pair, err := GenerateCA(CertOptions{
-		CommonName:   "ovpn-server-20021",
-		Org:          "ExampleOrg",
-		Country:      "CN",
-		Province:     "JiangSu",
-		Locality:     "NanJing",
-		EmailAddress: "0000@1111.222com",
-		Key:          KeyOptions{KeyType: KeyTypeRSA, RSABits: 2048},
+		CommonName:         "ovpn-server-20021",
+		Org:                "ExampleOrg",
+		OrganizationalUnit: "IT Dept",
+		Country:            "CN",
+		Province:           "JiangSu",
+		Locality:           "NanJing",
+		EmailAddress:       "0000@1111.222com",
+		Key:                KeyOptions{KeyType: KeyTypeRSA, RSABits: 2048},
 	})
 	if err != nil {
 		t.Fatalf("generate: %v", err)
@@ -107,6 +108,9 @@ func TestCertSubjectFields(t *testing.T) {
 	if len(cert.Subject.Locality) == 0 || cert.Subject.Locality[0] != "NanJing" {
 		t.Fatalf("L mismatch: %v", cert.Subject.Locality)
 	}
+	if len(cert.Subject.OrganizationalUnit) == 0 || cert.Subject.OrganizationalUnit[0] != "IT Dept" {
+		t.Fatalf("OU mismatch: %v", cert.Subject.OrganizationalUnit)
+	}
 	foundEmail := false
 	allAttrs := append(append([]pkix.AttributeTypeAndValue{}, cert.Subject.Names...), cert.Subject.ExtraNames...)
 	for _, attr := range allAttrs {
@@ -123,7 +127,7 @@ func TestCertSubjectFields(t *testing.T) {
 		t.Fatalf("emailAddress SAN missing: %v", cert.EmailAddresses)
 	}
 
-	want := "C=CN, ST=JiangSu, L=NanJing, O=ExampleOrg, CN=ovpn-server-20021, emailAddress=0000@1111.222com"
+	want := "C=CN, ST=JiangSu, L=NanJing, O=ExampleOrg, OU=IT Dept, CN=ovpn-server-20021, emailAddress=0000@1111.222com"
 	if pair.Subject != want {
 		t.Fatalf("formatted subject mismatch:\n got: %s\nwant: %s", pair.Subject, want)
 	}

@@ -370,18 +370,19 @@ func (a *App) ParseCertificateHandler(c *gin.Context, user *models.User) {
 // GenerateCAHandler 生成自签名 CA 证书。
 func (a *App) GenerateCAHandler(c *gin.Context, user *models.User) {
 	type Param struct {
-		Name         string `json:"name" binding:"required,min=1,max=100"`
-		CommonName   string `json:"common_name" binding:"required,min=1,max=100"`
-		Org          string `json:"org" binding:"max=100"`
-		Country      string `json:"country" binding:"max=10"`
-		Province     string `json:"province" binding:"max=100"`
-		Locality     string `json:"locality" binding:"max=100"`
-		EmailAddress string `json:"email_address" binding:"max=200"`
-		Days         int    `json:"days"`
-		KeyType      string `json:"key_type"`
-		RSABits      int    `json:"rsa_bits"`
-		ECCurve      string `json:"ec_curve"`
-		Description  string `json:"description" binding:"max=500"`
+		Name               string `json:"name" binding:"required,min=1,max=100"`
+		CommonName         string `json:"common_name" binding:"required,min=1,max=100"`
+		Org                string `json:"org" binding:"max=100"`
+		OrganizationalUnit string `json:"organizational_unit" binding:"max=100"`
+		Country            string `json:"country" binding:"max=10"`
+		Province           string `json:"province" binding:"max=100"`
+		Locality           string `json:"locality" binding:"max=100"`
+		EmailAddress       string `json:"email_address" binding:"max=200"`
+		Days               int    `json:"days"`
+		KeyType            string `json:"key_type"`
+		RSABits            int    `json:"rsa_bits"`
+		ECCurve            string `json:"ec_curve"`
+		Description        string `json:"description" binding:"max=500"`
 	}
 	var param Param
 	if err := c.ShouldBindJSON(&param); err != nil {
@@ -389,14 +390,15 @@ func (a *App) GenerateCAHandler(c *gin.Context, user *models.User) {
 		return
 	}
 	pair, err := certutil.GenerateCA(certutil.CertOptions{
-		CommonName:   param.CommonName,
-		Org:          param.Org,
-		Country:      param.Country,
-		Province:     param.Province,
-		Locality:     param.Locality,
-		EmailAddress: param.EmailAddress,
-		Days:         param.Days,
-		Key:          certKeyOptions(param.KeyType, param.RSABits, param.ECCurve),
+		CommonName:         param.CommonName,
+		Org:                param.Org,
+		OrganizationalUnit: param.OrganizationalUnit,
+		Country:            param.Country,
+		Province:           param.Province,
+		Locality:           param.Locality,
+		EmailAddress:       param.EmailAddress,
+		Days:               param.Days,
+		Key:                certKeyOptions(param.KeyType, param.RSABits, param.ECCurve),
 	})
 	if err != nil {
 		c.JSON(500, gin.H{"result": "failed", "error": "生成 CA 失败: " + err.Error()})
@@ -414,20 +416,21 @@ func (a *App) GenerateCAHandler(c *gin.Context, user *models.User) {
 // SignCertificateHandler 使用上级 CA 签发服务器证书或客户端证书。
 func (a *App) SignCertificateHandler(c *gin.Context, user *models.User) {
 	type Param struct {
-		CAID         uint   `json:"ca_id" binding:"required"`
-		Name         string `json:"name" binding:"required,min=1,max=100"`
-		CommonName   string `json:"common_name" binding:"required,min=1,max=100"`
-		Org          string `json:"org" binding:"max=100"`
-		Country      string `json:"country" binding:"max=10"`
-		Province     string `json:"province" binding:"max=100"`
-		Locality     string `json:"locality" binding:"max=100"`
-		EmailAddress string `json:"email_address" binding:"max=200"`
-		Days         int    `json:"days"`
-		CertType     uint   `json:"cert_type" binding:"required"`
-		KeyType      string `json:"key_type"`
-		RSABits      int    `json:"rsa_bits"`
-		ECCurve      string `json:"ec_curve"`
-		Description  string `json:"description" binding:"max=500"`
+		CAID               uint   `json:"ca_id" binding:"required"`
+		Name               string `json:"name" binding:"required,min=1,max=100"`
+		CommonName         string `json:"common_name" binding:"required,min=1,max=100"`
+		Org                string `json:"org" binding:"max=100"`
+		OrganizationalUnit string `json:"organizational_unit" binding:"max=100"`
+		Country            string `json:"country" binding:"max=10"`
+		Province           string `json:"province" binding:"max=100"`
+		Locality           string `json:"locality" binding:"max=100"`
+		EmailAddress       string `json:"email_address" binding:"max=200"`
+		Days               int    `json:"days"`
+		CertType           uint   `json:"cert_type" binding:"required"`
+		KeyType            string `json:"key_type"`
+		RSABits            int    `json:"rsa_bits"`
+		ECCurve            string `json:"ec_curve"`
+		Description        string `json:"description" binding:"max=500"`
 	}
 	var param Param
 	if err := c.ShouldBindJSON(&param); err != nil {
@@ -452,16 +455,17 @@ func (a *App) SignCertificateHandler(c *gin.Context, user *models.User) {
 		return
 	}
 	pair, err := certutil.SignCert(ca.Cert, ca.Key, certutil.CertOptions{
-		CommonName:   param.CommonName,
-		Org:          param.Org,
-		Country:      param.Country,
-		Province:     param.Province,
-		Locality:     param.Locality,
-		EmailAddress: param.EmailAddress,
-		Days:         param.Days,
-		ServerAuth:   param.CertType == models.CERT_TYPE_SERVER,
-		ClientAuth:   true,
-		Key:          certKeyOptions(param.KeyType, param.RSABits, param.ECCurve),
+		CommonName:         param.CommonName,
+		Org:                param.Org,
+		OrganizationalUnit: param.OrganizationalUnit,
+		Country:            param.Country,
+		Province:           param.Province,
+		Locality:           param.Locality,
+		EmailAddress:       param.EmailAddress,
+		Days:               param.Days,
+		ServerAuth:         param.CertType == models.CERT_TYPE_SERVER,
+		ClientAuth:         true,
+		Key:                certKeyOptions(param.KeyType, param.RSABits, param.ECCurve),
 	})
 	if err != nil {
 		c.JSON(500, gin.H{"result": "failed", "error": "签发证书失败: " + err.Error()})

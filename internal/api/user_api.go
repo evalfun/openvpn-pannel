@@ -285,14 +285,16 @@ func (a *App) ListUserHandler(c *gin.Context, user *models.User) {
 	_page := c.DefaultQuery("page", "1")
 	_pageSize := c.DefaultQuery("page_size", "20")
 	_excludeGroupID := c.DefaultQuery("exclude_group_id", "0")
+	_excludePlanID := c.DefaultQuery("exclude_plan_id", "0")
 	queryName := c.DefaultQuery("query", "")
-	var page, pageSize, excludeGroupID int64
+	var page, pageSize, excludeGroupID, excludePlanID int64
 	var err error
-	var err1, err2 error
+	var err1, err2, err3 error
 	page, err = strconv.ParseInt(_page, 10, 64)
 	pageSize, err1 = strconv.ParseInt(_pageSize, 10, 64)
 	excludeGroupID, err2 = strconv.ParseInt(_excludeGroupID, 10, 64)
-	if err != nil || err1 != nil || err2 != nil {
+	excludePlanID, err3 = strconv.ParseInt(_excludePlanID, 10, 64)
+	if err != nil || err1 != nil || err2 != nil || err3 != nil {
 		c.JSON(400, gin.H{
 			"result": "failed",
 			"error":  "page和page_size参数必须是整数",
@@ -300,7 +302,7 @@ func (a *App) ListUserHandler(c *gin.Context, user *models.User) {
 		return
 	}
 	// 查询用户所在用户组
-	userList, err := a.daoManager.ListUsers(int(page), int(pageSize), queryName, uint(excludeGroupID))
+	userList, err := a.daoManager.ListUsers(int(page), int(pageSize), queryName, uint(excludeGroupID), uint(excludePlanID))
 	if err != nil {
 		c.JSON(500, gin.H{
 			"result": "failed",
@@ -308,7 +310,7 @@ func (a *App) ListUserHandler(c *gin.Context, user *models.User) {
 		})
 		return
 	}
-	userCount, err := a.daoManager.GetUserCount(queryName, uint(excludeGroupID))
+	userCount, err := a.daoManager.GetUserCount(queryName, uint(excludeGroupID), uint(excludePlanID))
 	if err != nil {
 		c.JSON(500, gin.H{
 			"result": "failed",

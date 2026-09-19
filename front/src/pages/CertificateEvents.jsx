@@ -245,7 +245,6 @@ const CertificateEvents = () => {
                   <TableCell sx={{ fontWeight: 'bold' }}>时间</TableCell>
                   <TableCell sx={{ fontWeight: 'bold' }}>类型</TableCell>
                   <TableCell sx={{ fontWeight: 'bold' }}>证书</TableCell>
-                  <TableCell sx={{ fontWeight: 'bold' }}>服务器</TableCell>
                   <TableCell sx={{ fontWeight: 'bold' }}>对端地址</TableCell>
                   <TableCell sx={{ fontWeight: 'bold' }}>事件数据</TableCell>
                 </TableRow>
@@ -267,7 +266,6 @@ const CertificateEvents = () => {
                           <Chip label={info.label} size="small" color={info.color} variant="outlined" />
                         </TableCell>
                         <TableCell>{event.cert_name || '-'}</TableCell>
-                        <TableCell>{event.server_name || '-'}</TableCell>
                         <TableCell>{event.real_ip_addr || '-'}</TableCell>
                         <TableCell sx={{ wordBreak: 'break-all', fontFamily: 'monospace', fontSize: 12 }}>
                           {event.event_data}

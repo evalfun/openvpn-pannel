@@ -485,6 +485,7 @@ const Groups = () => {
         <FormControl sx={{ minWidth: 120 }}>
           <InputLabel>每页数量</InputLabel>
           <Select
+          size="small"
             value={pageSize}
             label="每页数量"
             onChange={(e) => {
@@ -520,7 +521,7 @@ const Groups = () => {
         onClose={() => setOpenDescDialog(false)} 
         maxWidth={isMobile ? 'lg' : 'md'}
         fullWidth
-      >
+       fullScreen={isMobile}>
         <DialogTitle>用户组描述 - {selectedGroupNameForDesc}</DialogTitle>
         <DialogContent sx={{ paddingTop: 2 }}>
           <TextField
@@ -549,7 +550,7 @@ const Groups = () => {
         maxWidth={isMobile ? 'lg' : 'md'}
         fullWidth
         
-      >
+       fullScreen={isMobile}>
         <DialogTitle>创建新用户组</DialogTitle>
         <DialogContent sx={{ padding: isMobile ? '12px' : '24px' }}>
           {createGroupError && (
@@ -619,7 +620,7 @@ const Groups = () => {
             margin: 0,
           }
         }}
-      >
+       fullScreen={isMobile}>
         <DialogTitle>管理用户组 - {selectedGroup?.name}</DialogTitle>
         <DialogContent sx={{ paddingTop: 2 }}>
           {groupManageError && (
@@ -925,7 +926,7 @@ const Groups = () => {
         maxWidth={isMobile ? 'lg' : 'md'}
         fullWidth
         
-      >
+       fullScreen={isMobile}>
         <DialogTitle>添加用户到 {selectedGroup?.name}</DialogTitle>
         <DialogContent sx={{ paddingTop: 2 }}>
           {addUserDialogError && (
@@ -1064,7 +1065,7 @@ const Groups = () => {
         }} 
         maxWidth={isMobile ? 'lg' : 'md'}
         fullWidth
-      >
+       fullScreen={isMobile}>
         <DialogTitle>新增ACL</DialogTitle>
         <DialogContent sx={{ paddingTop: 2 }}>
           {addACLDialogError && (

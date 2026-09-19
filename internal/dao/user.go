@@ -164,24 +164,26 @@ func (um *DaoManager) ResetUserTraffic(userID uint) error {
 	return tx.Commit().Error
 }
 
-// 查询用户数量
-func (um *DaoManager) GetUserCount(queryName string, excludeGroupID uint) (int64, error) {
+// 查询用户数量（excludePlanID != 0 时排除已关联该限速方案的用户）
+func (um *DaoManager) GetUserCount(queryName string, excludeGroupID uint, excludePlanID uint) (int64, error) {
 	var userCount int64
-	var result *gorm.DB
-	// select count(*) from users where id not in (select user_id from user_groups where group_id=14);
-	if queryName != "" {
-		result = um.DB.Where("username like ? and id not in (?)", "%"+queryName+"%", um.DB.Table("user_groups").Where("group_id=?", excludeGroupID).Select("user_id")).Model(&models.User{}).Count(&userCount)
-	} else {
-		result = um.DB.Where("id not in (?)", um.DB.Table("user_groups").Where("group_id=?", excludeGroupID).Select("user_id")).Model(&models.User{}).Count(&userCount)
+	base := um.DB.Model(&models.User{}).
+		Where("id not in (?)", um.DB.Table("user_groups").Where("group_id=?", excludeGroupID).Select("user_id"))
+	if excludePlanID != 0 {
+		base = base.Where("rate_limit_plan_id <> ?", excludePlanID)
 	}
+	if queryName != "" {
+		base = base.Where("username like ?", "%"+queryName+"%")
+	}
+	result := base.Count(&userCount)
 	if result.Error != nil {
 		return 0, errors.New("查询用户数量失败 " + result.Error.Error())
 	}
 	return userCount, nil
 }
 
-// 列出用户
-func (um *DaoManager) ListUsers(page int, pageSize int, queryName string, excludeGroupID uint) ([]*models.User, error) {
+// 列出用户（excludePlanID != 0 时排除已关联该限速方案的用户）
+func (um *DaoManager) ListUsers(page int, pageSize int, queryName string, excludeGroupID uint, excludePlanID uint) ([]*models.User, error) {
 	if pageSize <= 0 {
 		pageSize = 20
 	}
@@ -189,14 +191,15 @@ func (um *DaoManager) ListUsers(page int, pageSize int, queryName string, exclud
 		page = 1
 	}
 	var userList []*models.User
-	var result *gorm.DB
-	if queryName != "" {
-		// select * from users where id not in (select user_id from user_groups where group_id=14); 排除用户组id
-		result = um.DB.Where("username like ? and id not in (?)", "%"+queryName+"%", um.DB.Table("user_groups").Where("group_id=?", excludeGroupID).Select("user_id")).Limit(pageSize).Offset((page - 1) * pageSize).Find(&userList)
-	} else {
-		//result = um.DB.Limit(pageSize).Offset((page - 1) * pageSize).Find(&userList)
-		result = um.DB.Where("id not in (?)", um.DB.Table("user_groups").Where("group_id=?", excludeGroupID).Select("user_id")).Limit(pageSize).Offset((page - 1) * pageSize).Find(&userList)
+	base := um.DB.Model(&models.User{}).
+		Where("id not in (?)", um.DB.Table("user_groups").Where("group_id=?", excludeGroupID).Select("user_id"))
+	if excludePlanID != 0 {
+		base = base.Where("rate_limit_plan_id <> ?", excludePlanID)
 	}
+	if queryName != "" {
+		base = base.Where("username like ?", "%"+queryName+"%")
+	}
+	result := base.Limit(pageSize).Offset((page - 1) * pageSize).Find(&userList)
 	if result.Error != nil {
 		return nil, errors.New("列出用户失败 " + result.Error.Error())
 	}

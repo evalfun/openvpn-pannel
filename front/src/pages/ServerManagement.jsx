@@ -50,6 +50,21 @@ import { serverAPI, permissionAPI, userManageAPI, groupAPI, certificateAPI } fro
 const CERT_REF_PREFIX = 'cert-stor:';
 const CERT_SELECT_PAGE_SIZE = 10;
 
+// 数据加密算法（data-ciphers）推荐顺序，从高到低
+const DATA_CIPHER_OPTIONS = [
+  'AES-256-GCM',
+  'AES-128-GCM',
+  'CHACHA20-POLY1305',
+  'AES-256-CBC',
+  'AES-192-CBC',
+  'DES-CBC',
+  'AES-128-CBC',
+  'BF-CBC',
+  'DES-EDE3-CBC',
+  'none',
+  'DESX-CBC',
+];
+
 // 解析证书引用 cert-stor:<id>/cert 或 cert-stor:<id>/key
 const parseCertRef = (value) => {
   const s = String(value || '').trim();
@@ -138,7 +153,7 @@ const ServerManagement = () => {
     cert: '',
     key: '',
     dh: '',
-    data_cipher: 'AES-256-GCM:AES-128-GCM:?CHACHA20-POLY1305',
+    data_cipher: 'AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305',
     topology: 'subnet',
     server_cidr: '100.66.10.0 255.255.255.0',
     duplicate_cn: true,
@@ -315,7 +330,7 @@ const ServerManagement = () => {
       cert: '',
       key: '',
       dh: '',
-      data_cipher: 'AES-256-GCM:AES-128-GCM:?CHACHA20-POLY1305',
+      data_cipher: 'AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305',
       topology: 'subnet',
       server_cidr: '100.66.10.0 255.255.255.0',
       duplicate_cn: true,
@@ -1270,7 +1285,7 @@ const ServerManagement = () => {
         }} 
         fullWidth
         maxWidth={isMobile ? 'lg' : 'md'}
-      >
+       fullScreen={isMobile}>
         <DialogTitle>
           {editingId ? '编辑服务器' : '创建新服务器'}
         </DialogTitle>
@@ -1347,6 +1362,27 @@ const ServerManagement = () => {
             sx={{ width: '100%', '@media (min-width:926px)': { width: '49%' } }}
           />
           </Box>
+
+          <Autocomplete
+            multiple
+            freeSolo
+            options={DATA_CIPHER_OPTIONS}
+            value={
+              formData.data_cipher
+                ? String(formData.data_cipher).split(':').filter(Boolean)
+                : []
+            }
+            onChange={(e, newValue) => handleFormChange('data_cipher', newValue.join(':'))}
+            renderInput={(params) => (
+              <TextField
+                {...params}
+                fullWidth
+                margin="normal"
+                label="数据加密算法 (data-ciphers)"
+                helperText="按推荐顺序从高到低多选，也可手动输入；提交格式以 : 分隔，例如 AES-256-GCM:AES-128-GCM"
+              />
+            )}
+          />
           
           <FormControlLabel
             control={
@@ -1501,7 +1537,7 @@ push "redirect-gateway def1"'
         maxWidth={isMobile ? 'lg' : 'md'}
         fullWidth
         
-      >
+       fullScreen={isMobile}>
         <DialogTitle sx={{paddingBottom: 0}}>权限管理 - {selectedServer?.name}</DialogTitle>
         <DialogContent sx={{ paddingTop: 1 }}>
           {permissionError && <Alert severity="error" sx={{ marginBottom: 2 }} onClose={() => setPermissionError('')}>{permissionError}</Alert>}
@@ -1710,7 +1746,7 @@ push "redirect-gateway def1"'
         
         fullWidth
         maxWidth={isMobile ? 'lg' : 'md'}
-      >
+       fullScreen={isMobile}>
         <DialogTitle>添加用户权限</DialogTitle>
         <DialogContent sx={{ paddingTop: 2 }}>
           {addPermissionError && (
@@ -1861,7 +1897,7 @@ push "redirect-gateway def1"'
         
         fullWidth
         maxWidth={isMobile ? 'lg' : 'md'}
-      >
+       fullScreen={isMobile}>
         <DialogTitle>添加用户组权限</DialogTitle>
         <DialogContent sx={{ paddingTop: 2 }}>
           {addPermissionError && (
@@ -2006,7 +2042,7 @@ push "redirect-gateway def1"'
         onClose={() => setClientConfigDialog(false)} 
         maxWidth={isMobile ? 'lg' : 'md'}
         fullWidth
-      >
+       fullScreen={isMobile}>
         <DialogTitle>客户端配置管理</DialogTitle>
         <DialogContent sx={{ paddingTop: 2 }}>
           {/* 使用独立的错误和成功状态变量 */}
@@ -2142,7 +2178,7 @@ push "redirect-gateway def1"'
         onClose={() => setShowFullConfigDialog(false)} 
         maxWidth="md"
         fullWidth
-      >
+       fullScreen={isMobile}>
         <DialogTitle>完整配置内容 - {selectedServerConfigs.find(c => c.config === fullConfigContent)?.client_cert_name || ''}</DialogTitle>
         <DialogContent>
           <TextField
@@ -2169,7 +2205,7 @@ push "redirect-gateway def1"'
         }} 
         maxWidth="md"
         fullWidth
-      >
+       fullScreen={isMobile}>
         <DialogTitle>
           {configFormData.ID ? '编辑客户端配置' : '添加客户端配置'}
         </DialogTitle>
@@ -2237,7 +2273,7 @@ push "redirect-gateway def1"'
         onClose={() => setCertSelect((prev) => ({ ...prev, open: false }))}
         maxWidth="md"
         fullWidth
-      >
+       fullScreen={isMobile}>
         <DialogTitle>
           {certSelect.target === 'ca' ? '选择 CA 证书' : '选择服务器证书'}
         </DialogTitle>
@@ -2301,7 +2337,7 @@ push "redirect-gateway def1"'
       </Dialog>
 
       {/* DH 参数生成 */}
-      <Dialog open={dhDialog.open} onClose={() => setDhDialog({ ...dhDialog, open: false })} maxWidth="xs" fullWidth>
+      <Dialog open={dhDialog.open} onClose={() => setDhDialog({ ...dhDialog, open: false })} maxWidth="xs" fullWidth fullScreen={isMobile}>
         <DialogTitle>生成 DH 参数</DialogTitle>
         <DialogContent>
           {formData.dh && <Alert severity="warning" sx={{ marginTop: 1, marginBottom: 1 }}>当前已有 DH 参数，生成后将覆盖现有值。</Alert>}
@@ -2323,7 +2359,7 @@ push "redirect-gateway def1"'
       </Dialog>
 
       {/* 导出客户端配置 */}
-      <Dialog open={exportDialog.open} onClose={() => setExportDialog((prev) => ({ ...prev, open: false }))} maxWidth="sm" fullWidth>
+      <Dialog open={exportDialog.open} onClose={() => setExportDialog((prev) => ({ ...prev, open: false }))} maxWidth="sm" fullWidth fullScreen={isMobile}>
         <DialogTitle>导出客户端配置</DialogTitle>
         <DialogContent sx={{ paddingTop: 2 }}>
           {exportDialog.error && <Alert severity="error" sx={{ marginBottom: 2 }}>{exportDialog.error}</Alert>}

@@ -3,6 +3,7 @@ package dao
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"openvpn-pannel/internal/config"
 	"openvpn-pannel/internal/models"
@@ -233,5 +234,101 @@ func TestResolveRateLimitUserPermitAllGroupsAndDeny(t *testing.T) {
 	}
 	if up, down, _ := dm.ResolveUserRateLimit(du.ID, serverID); up != 0 || down != 0 {
 		t.Fatalf("deny min rate = (%d,%d), want (0,0)", up, down)
+	}
+}
+
+// 验证达量限速方案与用户限速取最低值、周期统计与重置。
+func TestRateLimitPlanCycleAndResolution(t *testing.T) {
+	dm := newTestDaoManager(t)
+
+	plan := &models.RateLimitPlan{Name: "p1", PeriodSeconds: 3600, CreatedAt: 1}
+	// 优先级越大越先匹配：禁止连接(3) > 限速(2) > 不限速(1)
+	rules := []*models.RateLimitRule{
+		{Priority: 3, UploadThresholdBytes: 300, DownloadThresholdBytes: 300, AllowConnect: false},
+		{Priority: 2, UploadThresholdBytes: 200, DownloadThresholdBytes: 200, LimitUploadKB: 1000, LimitDownloadKB: 2000, AllowConnect: true},
+		{Priority: 1, UploadThresholdBytes: 100, DownloadThresholdBytes: 100, AllowConnect: true},
+	}
+	if err := dm.CreateRateLimitPlan(plan, rules); err != nil {
+		t.Fatalf("CreateRateLimitPlan: %v", err)
+	}
+	if len(rules) == 0 || rules[0].ID == 0 {
+		t.Fatalf("rules should be persisted with IDs: %+v", rules)
+	}
+
+	// 用户固定限速 500/0，用于验证与方案取最低
+	if err := dm.CreateUser("puser", "pass", "", models.RATE_LIMIT_TYPE_FIXED, 500, 0); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	u := mustUser(t, dm, "puser")
+	affected, err := dm.AddUsersToRateLimitPlan(plan.ID, []string{"puser"})
+	if err != nil || affected != 1 {
+		t.Fatalf("AddUsersToRateLimitPlan affected=%d err=%v", affected, err)
+	}
+
+	// 周期内 0 流量：未触发任何规则（默认档），与用户限速取最低 => (500, 0)
+	up, down, allow, err := dm.ResolveUserRateLimitAndConnect(u.ID, 1)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if up != 500 || down != 0 || !allow {
+		t.Fatalf("rate=(%d,%d) allow=%v, want (500,0) true", up, down, allow)
+	}
+
+	// 已用上传 150：触发优先级 1（不限速），取最低 => (500,0)
+	if err := dm.AddUserCycleTraffic("puser", 150, 0); err != nil {
+		t.Fatalf("AddUserCycleTraffic: %v", err)
+	}
+	up, down, allow, err = dm.ResolveUserRateLimitAndConnect(u.ID, 1)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if up != 500 || down != 0 || !allow {
+		t.Fatalf("rate=(%d,%d) allow=%v, want (500,0) true", up, down, allow)
+	}
+
+	// 已用上传 250：触发优先级 2 (1000,2000)，取最低 => (500,2000)
+	if err := dm.AddUserCycleTraffic("puser", 100, 0); err != nil {
+		t.Fatalf("AddUserCycleTraffic: %v", err)
+	}
+	up, down, allow, err = dm.ResolveUserRateLimitAndConnect(u.ID, 1)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if up != 500 || down != 2000 || !allow {
+		t.Fatalf("rate=(%d,%d) allow=%v, want (500,2000) true", up, down, allow)
+	}
+
+	// 已用上传 350：触发优先级 3（禁止连接）
+	if err := dm.AddUserCycleTraffic("puser", 100, 0); err != nil {
+		t.Fatalf("AddUserCycleTraffic: %v", err)
+	}
+	_, _, allow, err = dm.ResolveUserRateLimitAndConnect(u.ID, 1)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if allow {
+		t.Fatalf("allow=true, want false (deny rule matched)")
+	}
+
+	// 剩余重置时间应大于 0
+	if remaining, err := dm.GetRateLimitResetRemaining(u.ID); err != nil || remaining == 0 {
+		t.Fatalf("GetRateLimitResetRemaining=%d err=%v, want > 0", remaining, err)
+	}
+
+	// 把周期起点提前超过一个周期，应被重置
+	if err := dm.DB.Model(&models.User{}).Where("id = ?", u.ID).
+		Update("rate_limit_cycle_start", uint64(time.Now().Unix())-4000).Error; err != nil {
+		t.Fatalf("update cycle start: %v", err)
+	}
+	resetCount, err := dm.ResetExpiredRateLimitCycles()
+	if err != nil || resetCount < 1 {
+		t.Fatalf("ResetExpiredRateLimitCycles count=%d err=%v", resetCount, err)
+	}
+	up, _, allow, err = dm.ResolveUserRateLimitAndConnect(u.ID, 1)
+	if err != nil {
+		t.Fatalf("Resolve after reset: %v", err)
+	}
+	if up != 500 || !allow {
+		t.Fatalf("after reset rate=%d allow=%v, want 500 true", up, allow)
 	}
 }

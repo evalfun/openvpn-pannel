@@ -205,6 +205,7 @@ const Certificates = () => {
     name: '',
     common_name: '',
     org: '',
+    organizational_unit: '',
     country: '',
     province: '',
     locality: '',
@@ -251,7 +252,7 @@ const Certificates = () => {
   }, [loadCerts]);
 
   const resetForm = () => {
-    setForm({ name: '', common_name: '', org: '', country: '', province: '', locality: '', email_address: '', days: 3650, description: '' });
+    setForm({ name: '', common_name: '', org: '', organizational_unit: '', country: '', province: '', locality: '', email_address: '', days: 3650, description: '' });
     setKeyOptions(initialKeyOptions);
     setDialogError('');
   };
@@ -526,7 +527,7 @@ const Certificates = () => {
           </Box>
         ) : (
           <TableContainer>
-            <Table>
+            <Table size="small">
               <TableHead>
                 <TableRow sx={{ backgroundColor: '#f5f5f5' }}>
                   <TableCell sx={{ fontWeight: 'bold' }}>名称</TableCell>
@@ -616,6 +617,7 @@ const Certificates = () => {
           <FormControl sx={{ minWidth: 120 }}>
             <InputLabel>每页数量</InputLabel>
             <Select
+             size="small"
               value={pageSize}
               label="每页数量"
               onChange={(e) => {
@@ -640,7 +642,7 @@ const Certificates = () => {
       </Paper>
 
       {/* 查看详情 */}
-      <Dialog open={viewDialog.open} onClose={() => setViewDialog({ open: false, data: null })} maxWidth="md" fullWidth>
+      <Dialog open={viewDialog.open} onClose={() => setViewDialog({ open: false, data: null })} maxWidth="md" fullWidth fullScreen={isMobile}>
         <DialogTitle>证书详情：{viewDialog.data?.name}</DialogTitle>
         <DialogContent dividers>
           {(() => {
@@ -717,7 +719,7 @@ const Certificates = () => {
         onClose={() => setSubjectDialog({ open: false, cert: null })}
         maxWidth="xs"
         fullWidth
-      >
+       fullScreen={isMobile}>
         <DialogTitle>证书主题：{subjectDialog.cert?.name}</DialogTitle>
         <DialogContent>
           {parseSubject(subjectDialog.cert?.subject).length === 0 ? (
@@ -753,7 +755,7 @@ const Certificates = () => {
           setDialogError('');
         };
         return (
-          <Dialog open={open} onClose={close} maxWidth="md" fullWidth>
+          <Dialog open={open} onClose={close} maxWidth="md" fullWidth fullScreen={isMobile}>
             <DialogTitle>{title}</DialogTitle>
             <DialogContent sx={{ paddingTop: 2 }}>
               {dialogError && <Alert severity="error" sx={{ marginBottom: 2 }}>{dialogError}</Alert>}
@@ -761,13 +763,15 @@ const Certificates = () => {
               <TextField fullWidth margin="normal" label="Common Name (CN)" required value={form.common_name} onChange={(e) => setForm({ ...form, common_name: e.target.value })} />
               <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 2 }}>
                 <TextField margin="normal" label="组织 (O)" value={form.org} onChange={(e) => setForm({ ...form, org: e.target.value })} sx={{ minWidth: 220 }} />
+                <TextField margin="normal" label="组织单位 (OU)" value={form.organizational_unit} onChange={(e) => setForm({ ...form, organizational_unit: e.target.value })} sx={{ minWidth: 220 }} />
                 <TextField margin="normal" label="国家 (C)" value={form.country} onChange={(e) => setForm({ ...form, country: e.target.value })} sx={{ minWidth: 120 }} />
                 <TextField margin="normal" label="省/州 (ST)" value={form.province} onChange={(e) => setForm({ ...form, province: e.target.value })} sx={{ minWidth: 160 }} />
                 <TextField margin="normal" label="城市 (L)" value={form.locality} onChange={(e) => setForm({ ...form, locality: e.target.value })} sx={{ minWidth: 160 }} />
                 <TextField margin="normal" label="邮箱 (emailAddress)" value={form.email_address} onChange={(e) => setForm({ ...form, email_address: e.target.value })} sx={{ minWidth: 220 }} />
                 <TextField margin="normal" label="有效期(天)" type="number" value={form.days} onChange={(e) => setForm({ ...form, days: Number(e.target.value) })} sx={{ minWidth: 140 }} />
+                <KeyOptionsFields value={keyOptions} onChange={setKeyOptions} />
               </Box>
-              <KeyOptionsFields value={keyOptions} onChange={setKeyOptions} />
+              
               <TextField fullWidth margin="normal" label="备注" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
             </DialogContent>
             <DialogActions>
@@ -786,7 +790,7 @@ const Certificates = () => {
         onClose={() => { setImportDialog({ open: false, certType: CERT_TYPE_SERVER }); setDialogError(''); }}
         maxWidth="md"
         fullWidth
-      >
+       fullScreen={isMobile}>
         <DialogTitle>{isLevel2 ? '导入证书' : '导入 CA 证书'}</DialogTitle>
         <DialogContent sx={{ paddingTop: 2 }}>
           {dialogError && <Alert severity="error" sx={{ marginBottom: 2 }}>{dialogError}</Alert>}

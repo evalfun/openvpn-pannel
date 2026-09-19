@@ -25,6 +25,7 @@ import AccountCircleIcon from '@mui/icons-material/AccountCircle';
 import HistoryIcon from '@mui/icons-material/History';
 import HelpIcon from '@mui/icons-material/Help';
 import VpnKeyIcon from '@mui/icons-material/VpnKey';
+import SpeedIcon from '@mui/icons-material/Speed';
 import { useNavigate, Outlet } from 'react-router-dom';
 import { userAPI } from '../api';
 const DRAWER_WIDTH = 240;
@@ -70,6 +71,7 @@ const Layout = () => {
     { label: '用户管理', icon: <PeopleIcon />, path: '/dashboard/users' },
     { label: '用户组管理', icon: <SecurityIcon />, path: '/dashboard/groups' },
     { label: '服务器管理', icon: <StorageIcon />, path: '/dashboard/servers' },
+    { label: '达量限速', icon: <SpeedIcon />, path: '/dashboard/ratelimit' },
     { label: '证书管理', icon: <VpnKeyIcon />, path: '/dashboard/certificates' },
     { label: '资源管理', icon: <SettingsIcon />, path: '/dashboard/resources' },
     { label: '日志/状态', icon: <HistoryIcon />, path: '/dashboard/logs' },

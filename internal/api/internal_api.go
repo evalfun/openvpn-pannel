@@ -81,6 +81,18 @@ func (a *App) UserAuthInternalHandler(c *gin.Context) {
 		return
 	}
 	if result {
+		// 达量限速：匹配到“禁止连接”规则时直接认证失败，并提示多久后可继续连接。
+		_, _, allowConnect, rlErr := a.daoManager.ResolveUserRateLimitAndConnect(userModel.ID, uint(serverID))
+		if rlErr != nil {
+			log.Println("达量限速校验失败: ", rlErr.Error())
+		}
+		if !allowConnect {
+			remaining, _ := a.daoManager.GetRateLimitResetRemaining(userModel.ID)
+			reason := fmt.Sprintf("已达流量上限，禁止连接，请在 %s 后可继续连接", formatRetryAfter(remaining))
+			c.String(403, "result="+reason)
+			a.daoManager.CreateEvent(uint(serverID), models.SERVER_EVENT_TYPE_CLIENT_AUTH_FAIL, requestData["real_ip_addr"], fmt.Sprintf("达量限速禁止连接 证书=%s 用户=%s", requestData["client_cert_name"], username))
+			return
+		}
 		c.String(200, "result="+"success")
 		a.daoManager.CreateEvent(uint(serverID), models.SERVER_EVENT_TYPE_CLIENT_AUTH_SUCCESS, requestData["real_ip_addr"], fmt.Sprintf("登录成功 证书=%s 用户=%s", requestData["client_cert_name"], username))
 	} else {
@@ -163,10 +175,22 @@ func (a *App) UserOnlineInternalHandler(c *gin.Context) {
 	virtualIPAddr := requestData["virtual_ip_addr"]
 	clientCertName := requestData["client_cert_name"]
 	a.daoManager.CreateEvent(uint(serverID), models.SERVER_EVENT_TYPE_CLIENT_ONLINE, realIPAddr, fmt.Sprintf("证书=%s 用户=%s 虚拟IP=%s", clientCertName, username, virtualIPAddr))
+	// 计算并记录本次会话生效的限速，供运行时“仅对限速变化的客户端重设 tc”判断是否变化。
+	var appliedUploadKB, appliedDownloadKB uint64
+	if userModel, err := a.daoManager.GetUserByUsername(string(username)); err == nil {
+		uploadKB, downloadKB, _, rlErr := a.daoManager.ResolveUserRateLimitAndConnect(userModel.ID, uint(serverID))
+		if rlErr != nil {
+			log.Println("计算用户生效限速失败: ", rlErr.Error())
+		} else {
+			appliedUploadKB, appliedDownloadKB = uploadKB, downloadKB
+		}
+	}
 	err = a.daoManager.CreateConnectedClientInfoRecord(&models.ConnectedClientInfoRecord{
-		VirtualIPAddr: virtualIPAddr,
-		ServerID:      uint(serverID),
-		Username:      string(username),
+		VirtualIPAddr:   virtualIPAddr,
+		ServerID:        uint(serverID),
+		Username:        string(username),
+		UploadLimitKB:   appliedUploadKB,
+		DownloadLimitKB: appliedDownloadKB,
 	})
 	if err != nil {
 		log.Println("记录用户在线信息失败" + err.Error())
@@ -235,6 +259,10 @@ func (a *App) UserOfflineInternalHandler(c *gin.Context) {
 	err = a.daoManager.UpdateUserTraffic(string(username), bytesSend, bytesReceived)
 	if err != nil {
 		log.Println("更新用户流量失败: ", err.Error())
+	}
+	// 累加到达量限速方案的当前周期统计（未关联方案的会被忽略）。
+	if err = a.daoManager.AddUserCycleTraffic(string(username), bytesSend, bytesReceived); err != nil {
+		log.Println("更新用户周期流量失败: ", err.Error())
 	}
 
 	err = a.daoManager.DeleteConnectedClientInfoRecord(virtualIPAddr, uint(serverID))

@@ -1,7 +1,10 @@
 package api
 
 import (
+	"fmt"
 	"log"
+	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,11 +16,21 @@ import (
 )
 
 type App struct {
-	data              uint32
-	router            *gin.Engine
-	cfg               *config.Config
-	daoManager        *dao.DaoManager
-	ovpnProcessList   map[uint]*ovpnserver.OpenVPNServerInstance
+	data            uint32
+	router          *gin.Engine
+	cfg             *config.Config
+	daoManager      *dao.DaoManager
+	ovpnProcessList map[uint]*ovpnserver.OpenVPNServerInstance
+	// ovpnProcessLock 为每个服务器实例保存一把读写锁，保护该实例自身的可变状态与操作：
+	// 进程启停(cmd/pid)、配置文件/ccd 写入、管理 socket 命令(status/kill)、日志读写与轮换。
+	//
+	// 这里必须用 *sync.RWMutex：map 元素不可取地址，值类型的锁无法原地 Lock()，
+	// 复制出来加锁只会锁到副本（且 go vet 会报 copylocks）。
+	ovpnProcessLock map[uint]*sync.RWMutex
+	// ovpnProcessLockMu 只保护 ovpnProcessLock 这个 map 的读写。它独立于全局锁 a.lock，
+	// 这样即便调用方已持有 a.lock，也能安全地获取实例锁，避免自死锁。
+	ovpnProcessLockMu sync.Mutex
+	// lock 全局读写锁，只保护 ovpnProcessList 这个 map 的读写。
 	lock              sync.RWMutex
 	internalAPIRouter *gin.Engine
 	buildDate         string
@@ -29,6 +42,42 @@ func (a *App) Run() {
 	go a.StartConnectedClientInfoUpdater(60 * time.Second)
 	go a.StartLogRotationTask(60 * time.Second)
 	a.router.Run(a.cfg.Listen)
+}
+
+// getProcessLock 返回指定服务器实例的读写锁；不存在时创建。
+// 仅操作 ovpnProcessLock 自身，不涉及全局锁 a.lock，可在任意上下文安全调用。
+// 加锁顺序约定：先获取全局锁 a.lock（若需要），再获取实例锁；持有实例锁时不要再获取 a.lock。
+func (a *App) getProcessLock(serverID uint) *sync.RWMutex {
+	a.ovpnProcessLockMu.Lock()
+	defer a.ovpnProcessLockMu.Unlock()
+	if a.ovpnProcessLock == nil {
+		a.ovpnProcessLock = make(map[uint]*sync.RWMutex)
+	}
+	l, ok := a.ovpnProcessLock[serverID]
+	if !ok {
+		l = &sync.RWMutex{}
+		a.ovpnProcessLock[serverID] = l
+	}
+	return l
+}
+
+// removeProcessLock 删除指定服务器实例的锁（服务器被删除时调用）。
+func (a *App) removeProcessLock(serverID uint) {
+	a.ovpnProcessLockMu.Lock()
+	defer a.ovpnProcessLockMu.Unlock()
+	delete(a.ovpnProcessLock, serverID)
+}
+
+// snapshotServerInstances 在全局读锁下复制一份实例列表，供定时任务遍历，
+// 避免遍历期间实例被增删导致并发读写 map。
+func (a *App) snapshotServerInstances() []*ovpnserver.OpenVPNServerInstance {
+	a.lock.RLock()
+	defer a.lock.RUnlock()
+	list := make([]*ovpnserver.OpenVPNServerInstance, 0, len(a.ovpnProcessList))
+	for _, ins := range a.ovpnProcessList {
+		list = append(list, ins)
+	}
+	return list
 }
 
 func (a *App) StartConnectedClientInfoUpdater(interval time.Duration) {
@@ -56,34 +105,41 @@ func (a *App) rotateAllServerLogs() {
 	}
 	maxBytes := a.cfg.MaxLogSizeKB * 1024
 
-	a.lock.RLock()
-	serverInstances := make([]*ovpnserver.OpenVPNServerInstance, 0, len(a.ovpnProcessList))
-	for _, serverInstance := range a.ovpnProcessList {
-		serverInstances = append(serverInstances, serverInstance)
-	}
-	a.lock.RUnlock()
+	serverInstances := a.snapshotServerInstances()
 
 	resourceMap := a.PrepareResourceMap([]string{ovpnserver.RESOURCE_ID_MISC_CONFIG})
 	for _, serverInstance := range serverInstances {
-		if err := serverInstance.RotateLogsFromMisc(resourceMap, maxBytes); err != nil {
-			log.Printf("日志轮换任务失败: server %d: %v", serverInstance.GetServerModel().ID, err)
+		serverID := serverInstance.GetServerModel().ID
+		// 日志轮换会截断日志文件，与实例的日志读写互斥。
+		pl := a.getProcessLock(serverID)
+		pl.Lock()
+		err := serverInstance.RotateLogsFromMisc(resourceMap, maxBytes)
+		pl.Unlock()
+		if err != nil {
+			log.Printf("日志轮换任务失败: server %d: %v", serverID, err)
 		}
 	}
 }
 
 func (a *App) updateConnectedClientInfoRecords() {
-	// 避免并发修改 ovpnProcessList
-	a.lock.RLock()
-	serverInstances := make([]*ovpnserver.OpenVPNServerInstance, 0, len(a.ovpnProcessList))
-	for _, serverInstance := range a.ovpnProcessList {
-		serverInstances = append(serverInstances, serverInstance)
+	// 达量限速：先重置已跨周期的用户流量统计
+	if resetCount, err := a.daoManager.ResetExpiredRateLimitCycles(); err != nil {
+		log.Printf("重置达量限速周期失败: %v", err)
+	} else if resetCount > 0 {
+		log.Printf("已重置 %d 个用户的达量限速周期", resetCount)
 	}
-	a.lock.RUnlock()
+
+	// 避免并发修改 ovpnProcessList
+	serverInstances := a.snapshotServerInstances()
 
 	for _, serverInstance := range serverInstances {
 		serverID := serverInstance.GetServerModel().ID
+		// 采集状态读取状态文件，持实例读锁；随后释放，避免与需要写锁的踢人/限速下发嵌套。
+		pl := a.getProcessLock(serverID)
+		pl.RLock()
 		resourceMap := a.PrepareResourceMap([]string{ovpnserver.RESOURCE_ID_MISC_CONFIG})
 		clientStatusList, err := serverInstance.GetStatusFromFile(resourceMap)
+		pl.RUnlock()
 		if err != nil {
 			log.Printf("更新客户端流量记录失败: 读取服务器状态文件失败 server %d GetStatus failed: %v", serverID, err)
 			continue
@@ -98,13 +154,129 @@ func (a *App) updateConnectedClientInfoRecords() {
 				}
 			}
 		}
+		// 达量限速：重新计算生效限速，只对变化（或需要踢下线）的客户端处理
+		a.reconcileRateLimits(serverInstance, clientStatusList)
 	}
+}
+
+// rateLimitChange 描述一个需要重新下发 tc 限速的在线客户端。
+type rateLimitChange struct {
+	virtualIPAddr string
+	uploadKB      uint64
+	downloadKB    uint64
+}
+
+// reconcileRateLimits 根据达量限速方案与用户/用户组限速重新计算每个在线客户端的生效限速：
+//   - 匹配到“禁止连接”规则：立即踢下线；
+//   - 生效限速（取最低）与记录不同：调用 ratelimit.sh 只对这些客户端重新设置 tc。
+func (a *App) reconcileRateLimits(serverInstance *ovpnserver.OpenVPNServerInstance, clientStatusList []*ovpnserver.ServerStatusClientInfoResponse) {
+	serverID := serverInstance.GetServerModel().ID
+	records, err := a.daoManager.ListConnectedClientInfoRecordByServerID(serverID)
+	if err != nil || len(records) == 0 {
+		return
+	}
+	commonNameByVIP := make(map[string]string)
+	for _, info := range clientStatusList {
+		for _, virtualIPAddr := range info.VirtualIPAddr {
+			commonNameByVIP[virtualIPAddr] = info.CommonName
+		}
+	}
+
+	changes := make([]rateLimitChange, 0)
+	for _, record := range records {
+		user, err := a.daoManager.GetUserByUsername(record.Username)
+		if err != nil {
+			continue
+		}
+		uploadKB, downloadKB, allowConnect, err := a.daoManager.ResolveUserRateLimitAndConnect(user.ID, serverID)
+		if err != nil {
+			log.Printf("达量限速计算失败 server %d 用户 %s: %v", serverID, record.Username, err)
+			continue
+		}
+		if !allowConnect {
+			commonName := commonNameByVIP[record.VirtualIPAddr]
+			if commonName == "" {
+				continue
+			}
+			resourceMap := a.PrepareResourceMap([]string{ovpnserver.RESOURCE_ID_MISC_CONFIG})
+			// 踢下线要访问管理 socket，与实例的其它操作互斥，取写锁。
+			pl := a.getProcessLock(serverID)
+			pl.Lock()
+			_, killErr := serverInstance.CloseClient(commonName, resourceMap)
+			pl.Unlock()
+			if killErr != nil {
+				log.Printf("达量限速踢下线失败 server %d 用户 %s 证书 %s: %v", serverID, record.Username, commonName, killErr)
+			} else {
+				log.Printf("达量限速禁止连接，已断开 server %d 用户 %s 证书 %s", serverID, record.Username, commonName)
+			}
+			continue
+		}
+		if uploadKB != record.UploadLimitKB || downloadKB != record.DownloadLimitKB {
+			changes = append(changes, rateLimitChange{
+				virtualIPAddr: record.VirtualIPAddr,
+				uploadKB:      uploadKB,
+				downloadKB:    downloadKB,
+			})
+		}
+	}
+	if len(changes) == 0 {
+		return
+	}
+	// 限速更新脚本会改动该实例网卡的 tc 状态，与其它实例操作互斥，取写锁。
+	pl := a.getProcessLock(serverID)
+	pl.Lock()
+	err = a.runRateLimitUpdateScript(serverInstance, changes)
+	pl.Unlock()
+	if err != nil {
+		log.Printf("达量限速更新脚本执行失败 server %d: %v", serverID, err)
+		return
+	}
+	for _, change := range changes {
+		if err := a.daoManager.UpdateConnectedClientInfoRecordLimit(serverID, change.virtualIPAddr, change.uploadKB, change.downloadKB); err != nil {
+			log.Printf("记录已下发的限速失败 server %d ip %s: %v", serverID, change.virtualIPAddr, err)
+		}
+	}
+	log.Printf("达量限速已更新 server %d 客户端数 %d", serverID, len(changes))
+}
+
+// runRateLimitUpdateScript 运行达量限速更新脚本资源（ratelimit.sh），
+// 通过标准输入把变化的客户端传给脚本。
+func (a *App) runRateLimitUpdateScript(serverInstance *ovpnserver.OpenVPNServerInstance, changes []rateLimitChange) error {
+	resourceMap := a.PrepareResourceMap([]string{ovpnserver.RESOURCE_ID_MISC_CONFIG, ovpnserver.RESOURCE_ID_RATE_LIMIT_SCRIPT})
+	script, ok := resourceMap[ovpnserver.RESOURCE_ID_RATE_LIMIT_SCRIPT]
+	if !ok {
+		script = ovpnserver.GetDefaultResource(ovpnserver.RESOURCE_ID_RATE_LIMIT_SCRIPT)
+	}
+	miscConfig, err := ovpnserver.ParseMiscConfig(resourceMap)
+	if err != nil {
+		return err
+	}
+	serverModel := serverInstance.GetServerModel()
+	workingDir := fmt.Sprintf("%s/%d/", strings.TrimRight(a.cfg.WorkingDir, "/"), serverModel.ID)
+	script = strings.ReplaceAll(script, "__INTERNAL_API__", a.cfg.InternalAPIListen)
+	script = strings.ReplaceAll(script, "__WORKING_DIR__", workingDir)
+	script = strings.ReplaceAll(script, "__SERVER_ID__", fmt.Sprintf("%d", serverModel.ID))
+	script = strings.ReplaceAll(script, "__SERVER_INTERFACE__", serverModel.Dev)
+
+	var stdin strings.Builder
+	for _, change := range changes {
+		fmt.Fprintf(&stdin, "%s %d %d\n", change.virtualIPAddr, change.uploadKB, change.downloadKB)
+	}
+
+	cmd := exec.Command(miscConfig.ShellPath, "-c", script)
+	cmd.Stdin = strings.NewReader(stdin.String())
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w 脚本输出: %s", err, string(out))
+	}
+	return nil
 }
 
 func NewApp(cfg *config.Config, buildDate string) *App {
 	app := &App{
 		cfg:             cfg,
 		ovpnProcessList: make(map[uint]*ovpnserver.OpenVPNServerInstance),
+		ovpnProcessLock: make(map[uint]*sync.RWMutex),
 		buildDate:       buildDate,
 	}
 	var err error

@@ -1,7 +1,6 @@
 package api
 
 import (
-	"embed"
 	"net/http"
 	"openvpn-pannel/internal/assets"
 	"path/filepath"
@@ -11,8 +10,6 @@ import (
 	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
 )
-
-var staticFiles embed.FS
 
 func getContentType(path string) string {
 	ext := filepath.Ext(path)
@@ -162,5 +159,17 @@ func (a *App) setupRoutes() {
 		// 事件接口
 		api.GET("/event/list", a.AdminLoginWarper(a.GetEventList))
 		api.POST("/event/clear", a.AdminLoginWarper(a.ClearEvent))
+
+		// 达量限速接口
+		api.GET("/ratelimit/plan/list", a.AdminLoginWarper(a.ListRateLimitPlanHandler))
+		api.POST("/ratelimit/plan/create", a.AdminLoginWarper(a.CreateRateLimitPlanHandler))
+		api.POST("/ratelimit/plan/update", a.AdminLoginWarper(a.UpdateRateLimitPlanHandler))
+		api.POST("/ratelimit/plan/delete", a.AdminLoginWarper(a.DeleteRateLimitPlanHandler))
+		api.GET("/ratelimit/plan/users", a.AdminLoginWarper(a.ListRateLimitPlanUsersHandler))
+		api.POST("/ratelimit/plan/users/add", a.AdminLoginWarper(a.AddUsersToRateLimitPlanHandler))
+		api.POST("/ratelimit/plan/users/remove", a.AdminLoginWarper(a.RemoveUsersFromRateLimitPlanHandler))
+		api.GET("/ratelimit/online", a.AdminLoginWarper(a.ListOnlineUserHandler))
+		api.GET("/ratelimit/user/status", a.AdminLoginWarper(a.ListRateLimitUserStatusHandler))
+		api.POST("/ratelimit/user/reset_cycle", a.AdminLoginWarper(a.ResetRateLimitUserCycleHandler))
 	}
 }

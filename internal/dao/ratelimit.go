@@ -111,21 +111,8 @@ func maxRate(values []uint64) uint64 {
 	return result
 }
 
-// ResolveUserRateLimit 计算用户连到指定服务器时的生效限速，返回 (上传, 下载) KB/s。
-// 0 表示不限速。约定：上传 = 服务器 -> 客户端；下载 = 客户端 -> 服务器。
-//
-// 先看用户限速策略：
-//   - 不设置限速：不限速；
-//   - 固定限速：使用用户自身的值；
-//   - 依据活跃用户组最低/最高速率：对活跃用户组的限速分别取最低/最高。
-//
-// 未知策略按默认策略（活跃用户组最低速率）处理。
-func (um *DaoManager) ResolveUserRateLimit(userID, serverID uint) (uint64, uint64, error) {
-	var user models.User
-	if err := um.DB.First(&user, userID).Error; err != nil {
-		return 0, 0, err
-	}
-
+// resolveUserGroupRateLimit 计算“用户限速 + 活跃用户组限速”策略下的限速，返回 (上传, 下载) KB/s。
+func (um *DaoManager) resolveUserGroupRateLimit(user *models.User, serverID uint) (uint64, uint64, error) {
 	switch user.RateLimitType {
 	case models.RATE_LIMIT_TYPE_NONE:
 		return 0, 0, nil
@@ -133,7 +120,7 @@ func (um *DaoManager) ResolveUserRateLimit(userID, serverID uint) (uint64, uint6
 		return user.UploadLimitKB, user.DownloadLimitKB, nil
 	}
 
-	groups, err := um.ListActiveGroupsForUser(userID, serverID)
+	groups, err := um.ListActiveGroupsForUser(user.ID, serverID)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -149,4 +136,48 @@ func (um *DaoManager) ResolveUserRateLimit(userID, serverID uint) (uint64, uint6
 	}
 	// 默认/未知策略：依据活跃用户组的最低速率
 	return minRate(uploads), minRate(downloads), nil
+}
+
+// ResolveUserRateLimitAndConnect 计算用户连到指定服务器时的生效限速与是否允许连接。
+//
+// 先匹配达量限速方案（若用户已关联）：按周期内已用流量匹配规则，得到方案限速与是否允许连接；
+// 再与用户限速/活跃用户组限速比较，取最低值（0 表示不限速，取最低时忽略 0），
+// 即“用户限速优先匹配达量限速方案，再去匹配用户限速和用户组限速，以最低值为准”。
+// allowConnect=false 表示匹配到“禁止连接”规则。
+func (um *DaoManager) ResolveUserRateLimitAndConnect(userID, serverID uint) (uint64, uint64, bool, error) {
+	var user models.User
+	if err := um.DB.First(&user, userID).Error; err != nil {
+		return 0, 0, true, err
+	}
+	userUp, userDown, err := um.resolveUserGroupRateLimit(&user, serverID)
+	if err != nil {
+		return 0, 0, true, err
+	}
+
+	var planUp, planDown uint64
+	allowConnect := true
+	if user.RateLimitPlanID != 0 {
+		_, rules, err := um.GetRateLimitPlanWithRules(user.RateLimitPlanID)
+		if err == nil && len(rules) > 0 {
+			cycleUp, cycleDown, err := um.GetUserCycleTraffic(userID)
+			if err != nil {
+				return 0, 0, true, err
+			}
+			rule := models.MatchRateLimitRule(rules, cycleUp, cycleDown)
+			if rule != nil {
+				allowConnect = rule.AllowConnect
+				planUp = rule.LimitUploadKB
+				planDown = rule.LimitDownloadKB
+			}
+		}
+	}
+
+	return minRate([]uint64{userUp, planUp}), minRate([]uint64{userDown, planDown}), allowConnect, nil
+}
+
+// ResolveUserRateLimit 计算用户连到指定服务器时的生效限速，返回 (上传, 下载) KB/s。
+// 0 表示不限速。约定：上传 = 服务器 -> 客户端；下载 = 客户端 -> 服务器。
+func (um *DaoManager) ResolveUserRateLimit(userID, serverID uint) (uint64, uint64, error) {
+	up, down, _, err := um.ResolveUserRateLimitAndConnect(userID, serverID)
+	return up, down, err
 }

@@ -38,6 +38,7 @@ func (a *App) WriteResourceHandler(c *gin.Context, user *models.User) {
 			"result": "failed",
 			"error":  err.Error(),
 		})
+		return
 	}
 	err = a.daoManager.WriteResource(param.ID, param.Content)
 	if err != nil {
@@ -113,6 +114,10 @@ func (a *App) ListResourceHandler(c *gin.Context, user *models.User) {
 			{
 				ID:          ovpnserver.RESOURCE_ID_CLIENT_ONLINE_SCRIPT,
 				Description: "客户端上线脚本内容",
+			},
+			{
+				ID:          ovpnserver.RESOURCE_ID_RATE_LIMIT_SCRIPT,
+				Description: "达量限速运行时更新脚本内容",
 			},
 			{
 				ID:          ovpnserver.RESOURCE_ID_CONFIG_TEMPLATE,

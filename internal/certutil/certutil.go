@@ -37,17 +37,18 @@ type KeyOptions struct {
 
 // CertOptions 证书生成参数。
 type CertOptions struct {
-	CommonName   string
-	Org          string
-	Country      string
-	Province     string
-	Locality     string
-	EmailAddress string
-	Days         int
-	IsCA         bool
-	ServerAuth   bool
-	ClientAuth   bool
-	Key          KeyOptions
+	CommonName         string
+	Org                string
+	OrganizationalUnit string
+	Country            string
+	Province           string
+	Locality           string
+	EmailAddress       string
+	Days               int
+	IsCA               bool
+	ServerAuth         bool
+	ClientAuth         bool
+	Key                KeyOptions
 }
 
 // oidEmailAddress 是 PKCS#9 emailAddress 属性的 OID（1.2.840.113549.1.9.1）。
@@ -233,6 +234,9 @@ func generateCertificate(opt CertOptions, parent *x509.Certificate, parentKey cr
 	subject := pkix.Name{CommonName: opt.CommonName}
 	if opt.Org != "" {
 		subject.Organization = []string{opt.Org}
+	}
+	if opt.OrganizationalUnit != "" {
+		subject.OrganizationalUnit = []string{opt.OrganizationalUnit}
 	}
 	if opt.Country != "" {
 		subject.Country = []string{opt.Country}

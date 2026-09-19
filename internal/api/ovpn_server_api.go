@@ -39,7 +39,7 @@ func (a *App) CreateOpenVPNServerHandler(c *gin.Context, user *models.User) {
 		Cert              string   `json:"cert" binding:"required,min=1,max=16384"`
 		Key               string   `json:"key" binding:"required,min=1,max=16384"`
 		DH                string   `json:"dh" binding:"required,min=1,max=16384"`
-		DataCipher        string   `json:"data_cipher" binding:"required,min=1,max=100"`
+		DataCipher        string   `json:"data_cipher" binding:"required,min=1,max=512"`
 		Topology          string   `json:"topology" binding:"required,min=1,max=100"`
 		ServerCIDR        string   `json:"server_cidr" binding:"required,min=1,max=100"`
 		DuplicateCN       bool     `json:"duplicate_cn"`
@@ -211,7 +211,7 @@ func (a *App) UpdateOpenVPNServerHandler(c *gin.Context, user *models.User) {
 		Cert              string   `json:"cert" binding:"required,min=1,max=16384"`
 		Key               string   `json:"key" binding:"required,min=1,max=16384"`
 		DH                string   `json:"dh" binding:"required,min=1,max=16384"`
-		DataCipher        string   `json:"data_cipher" binding:"required,min=1,max=100"`
+		DataCipher        string   `json:"data_cipher" binding:"required,min=1,max=512"`
 		Topology          string   `json:"topology" binding:"required,min=1,max=16384"`
 		ServerCIDR        string   `json:"server_cidr" binding:"required,min=1,max=16384"`
 		DuplicateCN       bool     `json:"duplicate_cn"`
@@ -314,7 +314,11 @@ func (a *App) DeleteOpenVPNServerHandler(c *gin.Context, user *models.User) {
 	}
 	// 检查是否在运行
 	instance, ok := a.ovpnProcessList[param.ID]
-	if ok && instance.Running() {
+	pl := a.getProcessLock(param.ID)
+	pl.RLock()
+	running := ok && instance.Running()
+	pl.RUnlock()
+	if running {
 		c.JSON(400, gin.H{
 			"result": "failed",
 			"error":  "服务器正在运行中,请先停止",
@@ -329,6 +333,9 @@ func (a *App) DeleteOpenVPNServerHandler(c *gin.Context, user *models.User) {
 		})
 		return
 	}
+	// 从进程列表移除，避免残留已删除服务器的实例与锁
+	delete(a.ovpnProcessList, param.ID)
+	a.removeProcessLock(param.ID)
 	workdir := path.Join(a.cfg.WorkingDir, fmt.Sprintf("%d", param.ID))
 	os.RemoveAll(workdir)
 	c.JSON(200, gin.H{
@@ -359,6 +366,8 @@ func (a *App) ListOpenVPNServerHandler(c *gin.Context, user *models.User) {
 		})
 		return
 	}
+	a.lock.RLock()
+	defer a.lock.RUnlock()
 	var responseList []Response
 	responseList = make([]Response, 0)
 	for _, serverModel := range resultList {
@@ -375,7 +384,11 @@ func (a *App) ListOpenVPNServerHandler(c *gin.Context, user *models.User) {
 		}
 		serverInstance, ok := a.ovpnProcessList[response.ID]
 		if ok {
-			if serverInstance.Running() {
+			pl := a.getProcessLock(response.ID)
+			pl.RLock()
+			running := serverInstance.Running()
+			pl.RUnlock()
+			if running {
 				response.Running = true
 			}
 		}
@@ -462,9 +475,16 @@ func (a *App) DeleteOpenVPNServerClientConfigHandler(c *gin.Context, user *model
 		})
 		return
 	}
+
 	if updateCCD {
+		a.lock.RLock()
+		defer a.lock.RUnlock()
 		serverInstance, ok := a.ovpnProcessList[serverID]
 		if ok {
+			// UpdateClientConfig 会改写实例的 ccd 目录，取实例写锁。
+			pl := a.getProcessLock(serverID)
+			pl.Lock()
+			defer pl.Unlock()
 			if serverInstance.Running() {
 				clientConfigList, err := a.daoManager.ListOpenVPNServerClientConfig(serverID)
 				if err == nil {
@@ -509,9 +529,14 @@ func (a *App) AddOpenVPNServerClientConfigHandler(c *gin.Context, user *models.U
 		})
 		return
 	}
-
+	a.lock.RLock()
+	defer a.lock.RUnlock()
 	serverInstance, ok := a.ovpnProcessList[clientConfig.ServerID]
 	if ok {
+		// UpdateClientConfig 会改写实例的 ccd 目录，取实例写锁。
+		pl := a.getProcessLock(clientConfig.ServerID)
+		pl.Lock()
+		defer pl.Unlock()
 		if serverInstance.Running() {
 			clientConfigList, err := a.daoManager.ListOpenVPNServerClientConfig(clientConfig.ServerID)
 			if err == nil {
@@ -630,6 +655,9 @@ func (a *App) StartOpenVPNServerInstanceHandler(c *gin.Context, user *models.Use
 	}
 	requestIP := c.ClientIP()
 	serverInstance, ok := a.ovpnProcessList[serverModel.ID]
+	pl := a.getProcessLock(serverModel.ID)
+	pl.Lock()
+	defer pl.Unlock()
 	if !ok || !serverInstance.Running() {
 		// 当服务器没有在进程列表中存在，或者服务器进程没有运行时，进行初始化配置文件操作
 		serverRouteList, err := a.daoManager.ListOpenVPNServerRoute(serverModel.ID)
@@ -730,6 +758,9 @@ func (a *App) StopOpenVPNServerInstanceHandler(c *gin.Context, user *models.User
 		})
 		return
 	}
+	pl := a.getProcessLock(param.ID)
+	pl.Lock()
+	defer pl.Unlock()
 	if !serverInstance.Running() {
 		c.JSON(400, gin.H{
 			"result": "failed",
@@ -899,6 +930,8 @@ func (a *App) GetOpenVPNServerLogHandler(c *gin.Context, user *models.User) {
 		})
 		return
 	}
+	a.lock.RLock()
+	defer a.lock.RUnlock()
 	serverInstance, ok := a.ovpnProcessList[uint(serverID)]
 	if !ok {
 		var serverModel *models.Server
@@ -912,9 +945,13 @@ func (a *App) GetOpenVPNServerLogHandler(c *gin.Context, user *models.User) {
 		}
 		serverInstance = ovpnserver.NewOpenVPNServerInstance(serverModel, nil, nil, fmt.Sprintf("%s/%d", a.cfg.WorkingDir, serverID), a.cfg.InternalAPIListen, "")
 	}
+	// 读取日志文件与日志轮换(copytruncate)互斥，取实例读锁。
+	pl := a.getProcessLock(uint(serverID))
+	pl.RLock()
 	var serverLogResponse *ovpnserver.ServerLogResponse
 
 	serverLogResponse, err = serverInstance.GetLog(logTypeInt, startLine, endLine, resourceMap)
+	pl.RUnlock()
 	if err != nil {
 		c.JSON(500, gin.H{
 			"result": "failed",
@@ -952,6 +989,8 @@ func (a *App) ClearOpenVPNServerLogHandler(c *gin.Context, user *models.User) {
 		logTypeInt = ovpnserver.SERVER_LOG_TYPE_SCRIPT
 	}
 	resourceMap := a.PrepareResourceMap([]string{ovpnserver.RESOURCE_ID_MISC_CONFIG})
+	a.lock.Lock()
+	defer a.lock.Unlock()
 	serverInstance, ok := a.ovpnProcessList[param.ID]
 	if !ok {
 		var serverModel *models.Server
@@ -965,10 +1004,12 @@ func (a *App) ClearOpenVPNServerLogHandler(c *gin.Context, user *models.User) {
 		}
 		serverInstance = ovpnserver.NewOpenVPNServerInstance(serverModel, nil, nil, fmt.Sprintf("%s/%d", a.cfg.WorkingDir, param.ID), a.cfg.InternalAPIListen, "")
 		a.ovpnProcessList[param.ID] = serverInstance
-		serverInstance.ClearLog(logTypeInt, resourceMap)
-	} else {
-		serverInstance.ClearLog(logTypeInt, resourceMap)
 	}
+	// 清空日志文件与日志轮换(copytruncate)互斥，取实例写锁。
+	pl := a.getProcessLock(param.ID)
+	pl.Lock()
+	defer pl.Unlock()
+	serverInstance.ClearLog(logTypeInt, resourceMap)
 	c.JSON(200, gin.H{
 		"result": "success",
 		"error":  nil,
@@ -1003,6 +1044,8 @@ func (a *App) GetOpenVPNServerStatusHandler(c *gin.Context, user *models.User) {
 		})
 		return
 	}
+	a.lock.RLock()
+	defer a.lock.RUnlock()
 	serverInstance, ok := a.ovpnProcessList[uint(serverID)]
 	if !ok {
 		c.JSON(400, gin.H{
@@ -1012,7 +1055,12 @@ func (a *App) GetOpenVPNServerStatusHandler(c *gin.Context, user *models.User) {
 		return
 	}
 	resourceMap := a.PrepareResourceMap([]string{ovpnserver.RESOURCE_ID_MISC_CONFIG})
+	// 访问管理 socket 获取状态，持实例写锁串行化：管理接口同时只应有一个连接，
+	// 与踢人(CloseClient)等其它 socket 操作互斥，避免连接冲突。
+	pl := a.getProcessLock(uint(serverID))
+	pl.Lock()
 	status, err := serverInstance.GetStatus(resourceMap)
+	pl.Unlock()
 	if err != nil {
 		c.JSON(500, gin.H{
 			"result": "failed",
@@ -1106,6 +1154,8 @@ func (a *App) CloseOpenVPNServerClientHandler(c *gin.Context, user *models.User)
 		return
 	}
 	resourceMap := a.PrepareResourceMap([]string{ovpnserver.RESOURCE_ID_MISC_CONFIG})
+	a.lock.RLock()
+	defer a.lock.RUnlock()
 	serverInstance, ok := a.ovpnProcessList[param.ID]
 	if !ok {
 		c.JSON(400, gin.H{
@@ -1114,7 +1164,11 @@ func (a *App) CloseOpenVPNServerClientHandler(c *gin.Context, user *models.User)
 		})
 		return
 	}
+	// 踢客户端要访问管理 socket，取实例写锁，与其它 socket 操作互斥。
+	pl := a.getProcessLock(param.ID)
+	pl.Lock()
 	message, err := serverInstance.CloseClient(param.ReadIPAddr, resourceMap)
+	pl.Unlock()
 	if err != nil {
 		c.JSON(500, gin.H{
 			"result": "failed",
@@ -1134,7 +1188,10 @@ func (a *App) StopAllOpenVPNServer() {
 	a.lock.Lock()
 	defer a.lock.Unlock()
 	resourceMap := a.PrepareResourceMap([]string{ovpnserver.RESOURCE_ID_MISC_CONFIG, ovpnserver.RESOURCE_ID_SERVER_EXIT_SCRIPT})
-	for _, serverInstance := range a.ovpnProcessList {
+	for serverID, serverInstance := range a.ovpnProcessList {
+		// 启停进程会改写实例的 cmd/pid，取实例写锁。
+		pl := a.getProcessLock(serverID)
+		pl.Lock()
 		if serverInstance.Running() {
 			err := serverInstance.Stop(resourceMap)
 			if err != nil {
@@ -1147,6 +1204,7 @@ func (a *App) StopAllOpenVPNServer() {
 
 			}
 		}
+		pl.Unlock()
 	}
 }
 
@@ -1160,56 +1218,66 @@ func (a *App) AutoStartOpenVPNServer() {
 		return
 	}
 	for _, serverModel := range serverModelList {
-		serverInstance, ok := a.ovpnProcessList[serverModel.ID]
-		if !ok || !serverInstance.Running() {
-			// 当服务器没有在进程列表中存在，或者服务器进程没有运行时，进行初始化配置文件操作
-			serverRouteList, err := a.daoManager.ListOpenVPNServerRoute(serverModel.ID)
-			if err != nil {
-				log.Println("服务器启动失败: 列出服务端路由失败: " + err.Error())
-				a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_START_FAIL, "internal", "服务器启动失败: 列出服务端路由失败 "+err.Error())
-				continue
-			}
-			clientConfigList, err := a.daoManager.ListOpenVPNServerClientConfig(serverModel.ID)
-			if err != nil {
-				log.Println("服务器启动失败: 列出客户端配置失败: " + err.Error())
-				a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_START_FAIL, "internal", "服务器启动失败: 列出客户端配置失败 "+err.Error())
-				continue
-			}
-			resourceMap := a.PrepareResourceMap([]string{ovpnserver.RESOURCE_ID_CONFIG_TEMPLATE, ovpnserver.RESOURCE_ID_CLIENT_OFFLINE_SCRIPT, ovpnserver.RESOURCE_ID_CLIENT_ONLINE_SCRIPT, ovpnserver.RESOURCE_ID_AUTH_SCRIPT, ovpnserver.RESOURCE_ID_SERVER_START_SCRIPT, ovpnserver.RESOURCE_ID_MISC_CONFIG})
-			var miscConfigStr string
-			miscConfig, ok := resourceMap[ovpnserver.RESOURCE_ID_MISC_CONFIG]
-			if ok {
-				miscConfigStr = miscConfig
-			} else {
-				miscConfigStr = ovpnserver.GetDefaultResource(ovpnserver.RESOURCE_ID_MISC_CONFIG)
-			}
-			var miscConfigModel ovpnserver.MiscConfig
-			err = json.Unmarshal([]byte(miscConfigStr), &miscConfigModel)
-			if err != nil {
-				log.Println("服务器启动失败: 解析杂项配置失败: " + err.Error())
-				a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_START_FAIL, "internal", "服务器启动失败: 解析杂项配置失败 "+err.Error())
-				continue
-			}
-			serverInstance = ovpnserver.NewOpenVPNServerInstance(a.resolvedServerModel(serverModel), serverRouteList, clientConfigList, fmt.Sprintf("%s/%d", a.cfg.WorkingDir, serverModel.ID), a.cfg.InternalAPIListen, miscConfigModel.OpenVPNPath)
-			a.ovpnProcessList[serverModel.ID] = serverInstance
-
-			err = serverInstance.WriteConfig(resourceMap)
-			if err != nil {
-				log.Println("服务器启动失败: 配置文件写入失败: " + err.Error())
-				a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_START_FAIL, "internal", "服务器启动失败: 配置文件写入失败 "+err.Error())
-				continue
-			}
-			err = serverInstance.Start(resourceMap)
-			if err != nil {
-				log.Println("服务器启动失败: " + err.Error())
-				a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_START_FAIL, "internal", "服务器启动失败: "+err.Error())
-				continue
-			}
-		} else {
-			continue
-		}
-		a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_START_SUCCESS, "internal", "服务器启动成功")
-		a.daoManager.DeleteAddedACLByServerID(serverModel.ID)
-		a.daoManager.DeleteConnectedClientInfoRecordByServerID(serverModel.ID)
+		a.autoStartServerLocked(serverModel)
 	}
+}
+
+// autoStartServerLocked 启动单个自启动服务器，调用方需持有全局写锁 a.lock。
+// 内部按“全局锁 -> 实例锁”的顺序获取实例锁；使用 return 而非 continue，保证锁必然释放。
+func (a *App) autoStartServerLocked(serverModel *models.Server) {
+	serverInstance, ok := a.ovpnProcessList[serverModel.ID]
+	// 启停进程会改写实例的 cmd/pid，取实例写锁。
+	pl := a.getProcessLock(serverModel.ID)
+	pl.Lock()
+	defer pl.Unlock()
+
+	if ok && serverInstance.Running() {
+		return
+	}
+	// 当服务器没有在进程列表中存在，或者服务器进程没有运行时，进行初始化配置文件操作
+	serverRouteList, err := a.daoManager.ListOpenVPNServerRoute(serverModel.ID)
+	if err != nil {
+		log.Println("服务器启动失败: 列出服务端路由失败: " + err.Error())
+		a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_START_FAIL, "internal", "服务器启动失败: 列出服务端路由失败 "+err.Error())
+		return
+	}
+	clientConfigList, err := a.daoManager.ListOpenVPNServerClientConfig(serverModel.ID)
+	if err != nil {
+		log.Println("服务器启动失败: 列出客户端配置失败: " + err.Error())
+		a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_START_FAIL, "internal", "服务器启动失败: 列出客户端配置失败 "+err.Error())
+		return
+	}
+	resourceMap := a.PrepareResourceMap([]string{ovpnserver.RESOURCE_ID_CONFIG_TEMPLATE, ovpnserver.RESOURCE_ID_CLIENT_OFFLINE_SCRIPT, ovpnserver.RESOURCE_ID_CLIENT_ONLINE_SCRIPT, ovpnserver.RESOURCE_ID_AUTH_SCRIPT, ovpnserver.RESOURCE_ID_SERVER_START_SCRIPT, ovpnserver.RESOURCE_ID_MISC_CONFIG})
+	var miscConfigStr string
+	miscConfig, ok := resourceMap[ovpnserver.RESOURCE_ID_MISC_CONFIG]
+	if ok {
+		miscConfigStr = miscConfig
+	} else {
+		miscConfigStr = ovpnserver.GetDefaultResource(ovpnserver.RESOURCE_ID_MISC_CONFIG)
+	}
+	var miscConfigModel ovpnserver.MiscConfig
+	err = json.Unmarshal([]byte(miscConfigStr), &miscConfigModel)
+	if err != nil {
+		log.Println("服务器启动失败: 解析杂项配置失败: " + err.Error())
+		a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_START_FAIL, "internal", "服务器启动失败: 解析杂项配置失败 "+err.Error())
+		return
+	}
+	serverInstance = ovpnserver.NewOpenVPNServerInstance(a.resolvedServerModel(serverModel), serverRouteList, clientConfigList, fmt.Sprintf("%s/%d", a.cfg.WorkingDir, serverModel.ID), a.cfg.InternalAPIListen, miscConfigModel.OpenVPNPath)
+	a.ovpnProcessList[serverModel.ID] = serverInstance
+
+	err = serverInstance.WriteConfig(resourceMap)
+	if err != nil {
+		log.Println("服务器启动失败: 配置文件写入失败: " + err.Error())
+		a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_START_FAIL, "internal", "服务器启动失败: 配置文件写入失败 "+err.Error())
+		return
+	}
+	err = serverInstance.Start(resourceMap)
+	if err != nil {
+		log.Println("服务器启动失败: " + err.Error())
+		a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_START_FAIL, "internal", "服务器启动失败: "+err.Error())
+		return
+	}
+	a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_START_SUCCESS, "internal", "服务器启动成功")
+	a.daoManager.DeleteAddedACLByServerID(serverModel.ID)
+	a.daoManager.DeleteConnectedClientInfoRecordByServerID(serverModel.ID)
 }

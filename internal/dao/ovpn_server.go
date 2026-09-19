@@ -543,3 +543,42 @@ func (um *DaoManager) UpdateConnectedClientInfoRecordTraffic(serverID uint, virt
 		})
 	return result.Error
 }
+
+// GetConnectedClientInfoRecord 按服务器与虚拟 IP 查询在线记录。
+func (um *DaoManager) GetConnectedClientInfoRecord(serverID uint, virtualIPAddr string) (*models.ConnectedClientInfoRecord, error) {
+	var info models.ConnectedClientInfoRecord
+	err := um.DB.Where("server_id = ? and virtual_ip_addr = ?", serverID, virtualIPAddr).First(&info).Error
+	if err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
+// UpdateConnectedClientInfoRecordLimit 记录该会话最近一次实际下发的限速(KB/s)。
+func (um *DaoManager) UpdateConnectedClientInfoRecordLimit(serverID uint, virtualIPAddr string, uploadKB, downloadKB uint64) error {
+	result := um.DB.Model(&models.ConnectedClientInfoRecord{}).
+		Where("server_id = ? and virtual_ip_addr = ?", serverID, virtualIPAddr).
+		Updates(map[string]interface{}{
+			"upload_limit_kb":   uploadKB,
+			"download_limit_kb": downloadKB,
+		})
+	return result.Error
+}
+
+// ListConnectedClientInfoRecordByUsername 列出某用户当前所有在线会话。
+func (um *DaoManager) ListConnectedClientInfoRecordByUsername(username string) ([]*models.ConnectedClientInfoRecord, error) {
+	var infoList []*models.ConnectedClientInfoRecord
+	err := um.DB.Where("username = ?", username).Find(&infoList).Error
+	return infoList, err
+}
+
+// UpdateConnectedClientInfoRecordLimitByUsername 更新某用户所有在线会话的已下发限速。
+func (um *DaoManager) UpdateConnectedClientInfoRecordLimitByUsername(username string, uploadKB, downloadKB uint64) error {
+	result := um.DB.Model(&models.ConnectedClientInfoRecord{}).
+		Where("username = ?", username).
+		Updates(map[string]interface{}{
+			"upload_limit_kb":   uploadKB,
+			"download_limit_kb": downloadKB,
+		})
+	return result.Error
+}

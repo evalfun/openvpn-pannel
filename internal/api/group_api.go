@@ -40,6 +40,7 @@ func (a *App) CreateGroupHandler(c *gin.Context, user *models.User) {
 			"result": "failed",
 			"error":  err.Error(),
 		})
+		return
 	}
 
 	c.JSON(200, gin.H{

@@ -146,13 +146,16 @@ export const groupAPI = {
 
 export const userManageAPI = {
   // 获取用户列表
-  getUserList: (page = 1, pageSize = 20, query = '', excludeGroupId = '') => {
+  getUserList: (page = 1, pageSize = 20, query = '', excludeGroupId = '', excludePlanId = '') => {
     let url = `/user/list?page=${page}&page_size=${pageSize}`;
     if (query) {
       url += `&query=${encodeURIComponent(query)}`;
     }
     if (excludeGroupId) {
       url += `&exclude_group_id=${excludeGroupId}`;
+    }
+    if (excludePlanId) {
+      url += `&exclude_plan_id=${excludePlanId}`;
     }
     return client.get(url);
   },
@@ -204,4 +207,34 @@ export const eventAPI = {
   
   // 清空事件
   clearEvents: (serverId) => client.post('/event/clear', { id: serverId }),
+};
+
+export const rateLimitAPI = {
+  // 列出达量限速方案
+  listPlans: () => client.get('/ratelimit/plan/list'),
+
+  // 创建/更新/删除方案
+  createPlan: (data) => client.post('/ratelimit/plan/create', data),
+  updatePlan: (data) => client.post('/ratelimit/plan/update', data),
+  deletePlan: (id) => client.post('/ratelimit/plan/delete', { id }),
+
+  // 方案关联用户
+  listPlanUsers: (id, page = 1, pageSize = 20, query = '') => {
+    let url = `/ratelimit/plan/users?id=${id}&page=${page}&page_size=${pageSize}`;
+    if (query) url += `&query=${encodeURIComponent(query)}`;
+    return client.get(url);
+  },
+  addPlanUsers: (planId, usernames) => client.post('/ratelimit/plan/users/add', { plan_id: planId, usernames }),
+  removePlanUsers: (planId, userIds) => client.post('/ratelimit/plan/users/remove', { plan_id: planId, user_ids: userIds }),
+
+  // 在线用户列表
+  listOnline: () => client.get('/ratelimit/online'),
+
+  // 用户状态（已关联方案的用户及其当前规则/限制）
+  listUserStatus: (page = 1, pageSize = 20, query = '') => {
+    let url = `/ratelimit/user/status?page=${page}&page_size=${pageSize}`;
+    if (query) url += `&query=${encodeURIComponent(query)}`;
+    return client.get(url);
+  },
+  resetUserCycle: (userId) => client.post('/ratelimit/user/reset_cycle', { user_id: userId }),
 };

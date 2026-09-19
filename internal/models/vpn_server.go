@@ -99,4 +99,8 @@ type ConnectedClientInfoRecord struct {
 	Username      string `gorm:"not null" json:"username"`
 	ByteReceived  uint64 `gorm:"not null;default:0" json:"byte_received"`
 	ByteSent      uint64 `gorm:"not null;default:0" json:"byte_sent"`
+	// UploadLimitKB/DownloadLimitKB 记录该会话最近一次实际下发的限速(KB/s)，0=不限速。
+	// 达量限速运行时据此判断生效限速是否变化，只对变化的客户端重新设置 tc。
+	UploadLimitKB   uint64 `gorm:"not null;default:0" json:"upload_limit_kb"`
+	DownloadLimitKB uint64 `gorm:"not null;default:0" json:"download_limit_kb"`
 }

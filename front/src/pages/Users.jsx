@@ -657,8 +657,7 @@ const Users = () => {
                 <TableCell sx={{ fontWeight: 'bold' }}>用户名</TableCell>
                 <TableCell sx={{ fontWeight: 'bold' }}>描述</TableCell>
                 <TableCell sx={{ fontWeight: 'bold' }}>限速</TableCell>
-                <TableCell sx={{ fontWeight: 'bold' }}>流量(总计)</TableCell>
-                <TableCell sx={{ fontWeight: 'bold' }}>流量(当前会话)</TableCell>
+                <TableCell sx={{ fontWeight: 'bold' }}>流量(历史/当前)</TableCell>
                 <TableCell sx={{ fontWeight: 'bold' }} >
                   操作
                 </TableCell>
@@ -698,20 +697,10 @@ const Users = () => {
                     <TableCell sx={{paddingTop:0, paddingBottom:0}}>
                       <Box>
                         <Typography variant="body2" sx={{ fontSize: '0.75rem' }}>
-                          ↑ {formatTraffic(user.upload_traffic || 0)}
+                          ↑ {formatTraffic(user.upload_traffic || 0)} ({formatTraffic(user.connected_upload_traffic || 0)})
                         </Typography>
                         <Typography variant="body2" sx={{ fontSize: '0.75rem' }}>
-                          ↓ {formatTraffic(user.download_traffic || 0)}
-                        </Typography>
-                      </Box>
-                    </TableCell>
-                    <TableCell sx={{paddingTop:0, paddingBottom:0}}>
-                      <Box>
-                        <Typography variant="body2" sx={{ fontSize: '0.75rem' }}>
-                          ↑ {formatTraffic(user.connected_upload_traffic || 0)}
-                        </Typography>
-                        <Typography variant="body2" sx={{ fontSize: '0.75rem' }}>
-                          ↓ {formatTraffic(user.connected_download_traffic || 0)}
+                          ↓ {formatTraffic(user.download_traffic || 0)} ({formatTraffic(user.connected_download_traffic || 0)})
                         </Typography>
                       </Box>
                     </TableCell>
@@ -731,7 +720,7 @@ const Users = () => {
                           startIcon={<EditIcon />}
                           onClick={() => handleEditUser(user)}
                         >
-                          更新信息
+                          编辑
                         </Button>
                         <Button
                           size="small"
@@ -793,7 +782,7 @@ const Users = () => {
       </Box>
 
       {/* 创建用户对话框 */}
-      <Dialog  maxWidth={isMobile ? 'lg' : 'md'} open={openDialog} onClose={() => { setOpenDialog(false); setCreateUserError(''); }} fullWidth>
+      <Dialog  maxWidth={isMobile ? 'lg' : 'md'} open={openDialog} onClose={() => { setOpenDialog(false); setCreateUserError(''); }} fullWidth fullScreen={isMobile}>
         <DialogTitle>创建新用户</DialogTitle>
         <DialogContent >
           {createUserError && (
@@ -835,7 +824,7 @@ const Users = () => {
       </Dialog>
 
       {/* 编辑用户对话框 */}
-      <Dialog  maxWidth={isMobile ? 'lg' : 'md'} open={openEditDialog} onClose={() => { setOpenEditDialog(false); setEditUserError(''); }} fullWidth>
+      <Dialog  maxWidth={isMobile ? 'lg' : 'md'} open={openEditDialog} onClose={() => { setOpenEditDialog(false); setEditUserError(''); }} fullWidth fullScreen={isMobile}>
         <DialogTitle>更新用户信息 - {editingUser.username}</DialogTitle>
         <DialogContent sx={{ paddingTop: 2 }}>
           {editUserError && (
@@ -876,7 +865,7 @@ const Users = () => {
         onClose={() => setOpenDescriptionModal(false)} 
         maxWidth={isMobile ? 'lg' : 'md'}
         fullWidth
-      >
+       fullScreen={isMobile}>
         <DialogTitle>完整描述 - {selectedUserNameForDesc}</DialogTitle>
         <DialogContent sx={{ paddingTop: 2 }}>
           <TextField
@@ -905,7 +894,7 @@ const Users = () => {
         maxWidth={isMobile ? 'lg' : 'md'}
         fullWidth
         
-      >
+       fullScreen={isMobile}>
         <DialogTitle>用户信息 - {selectedUser?.username}</DialogTitle>
         <DialogContent sx={{ paddingTop: 2 }}>
           {userInfoError && (
