@@ -53,6 +53,10 @@ export const certificateAPI = {
     const query = new URLSearchParams();
     if (params.parentId !== undefined && params.parentId !== null) query.append('parent_id', params.parentId);
     if (params.type !== undefined && params.type !== null) query.append('type', params.type);
+    if (params.types !== undefined && params.types !== null) {
+      const types = Array.isArray(params.types) ? params.types.join(',') : params.types;
+      if (types) query.append('types', types);
+    }
     if (params.hasKey !== undefined && params.hasKey !== null) query.append('has_key', params.hasKey ? 1 : 0);
     if (params.page !== undefined && params.page !== null) query.append('page', params.page);
     if (params.pageSize !== undefined && params.pageSize !== null) query.append('page_size', params.pageSize);

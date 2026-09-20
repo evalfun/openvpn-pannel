@@ -80,7 +80,7 @@ func (a *App) ExportClientConfigHandler(c *gin.Context, user *models.User) {
 			c.JSON(404, gin.H{"result": "failed", "error": "客户端证书不存在"})
 			return
 		}
-		if clientCert.Type != models.CERT_TYPE_CLIENT {
+		if clientCert.Type != models.CERT_TYPE_CLIENT && clientCert.Type != models.CERT_TYPE_UNSPECIFIED {
 			c.JSON(400, gin.H{"result": "failed", "error": "所选证书不是客户端证书"})
 			return
 		}

@@ -1,7 +1,6 @@
 package api
 
 import (
-	"crypto/x509"
 	"fmt"
 	"log"
 	"os"
@@ -77,7 +76,7 @@ func certKeyOptions(keyType string, rsaBits int, ecCurve string) certutil.KeyOpt
 }
 
 // ListCertificateHandler 列出证书（支持分页与过滤）。
-// 过滤参数：type（证书类型）、parent_id（某 CA 的子证书）、has_key=1（仅含私钥）。
+// 过滤参数：type（单个证书类型）、types（逗号分隔的多个类型）、parent_id（某 CA 的子证书）、has_key=1（仅含私钥）。
 // 分页参数：page（从 1 开始，默认 1）、page_size（默认 0 表示不分页，返回全部）。
 func (a *App) ListCertificateHandler(c *gin.Context, user *models.User) {
 	q := dao.CertificateListQuery{}
@@ -89,6 +88,21 @@ func (a *App) ListCertificateHandler(c *gin.Context, user *models.User) {
 		}
 		q.FilterType = true
 		q.CertType = uint(certType)
+	}
+	if v := c.Query("types"); v != "" {
+		for _, part := range strings.Split(v, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			certType, err := strconv.ParseUint(part, 10, 32)
+			if err != nil {
+				c.JSON(400, gin.H{"result": "failed", "error": "参数 types 必须是逗号分隔的 int 列表"})
+				return
+			}
+			q.CertTypes = append(q.CertTypes, uint(certType))
+		}
+		q.FilterTypes = len(q.CertTypes) > 0
 	}
 	if v := c.Query("parent_id"); v != "" {
 		pid, err := strconv.ParseUint(v, 10, 32)
@@ -126,22 +140,24 @@ func (a *App) ListCertificateHandler(c *gin.Context, user *models.User) {
 
 // certDetailInfo 证书详情响应：不含证书/私钥本体，仅返回展示所需的详细信息。
 type certDetailInfo struct {
-	ID              uint   `json:"id"`
-	Name            string `json:"name"`
-	Type            uint   `json:"type"`
-	ParentID        uint   `json:"parent_id"`
-	KeyType         string `json:"key_type"`
-	HasKey          bool   `json:"has_key"`
-	SerialNumber    string `json:"serial_number"`
-	Subject         string `json:"subject"`
-	Issuer          string `json:"issuer"`
-	CommonName      string `json:"common_name"`
-	NotBefore       int64  `json:"not_before"`
-	NotAfter        int64  `json:"not_after"`
-	CertSHA256      string `json:"cert_sha256"`
-	PublicKeySHA256 string `json:"public_key_sha256"`
-	Description     string `json:"description"`
-	CreatedAt       int64  `json:"created_at"`
+	ID              uint     `json:"id"`
+	Name            string   `json:"name"`
+	Type            uint     `json:"type"`
+	ParentID        uint     `json:"parent_id"`
+	KeyType         string   `json:"key_type"`
+	HasKey          bool     `json:"has_key"`
+	SerialNumber    string   `json:"serial_number"`
+	Subject         string   `json:"subject"`
+	Issuer          string   `json:"issuer"`
+	CommonName      string   `json:"common_name"`
+	NotBefore       int64    `json:"not_before"`
+	NotAfter        int64    `json:"not_after"`
+	KeyUsage        []string `json:"key_usage"`
+	ExtKeyUsage     []string `json:"ext_key_usage"`
+	CertSHA256      string   `json:"cert_sha256"`
+	PublicKeySHA256 string   `json:"public_key_sha256"`
+	Description     string   `json:"description"`
+	CreatedAt       int64    `json:"created_at"`
 }
 
 // formatFingerprint 把小写十六进制指纹格式化为冒号分隔的大写形式。
@@ -204,6 +220,8 @@ func certDetailFromModel(cert *models.Certificate) certDetailInfo {
 	}
 	if parsed, err := certutil.ParseCertificate(cert.Cert); err == nil {
 		info.CommonName = parsed.Subject.CommonName
+		info.KeyUsage = certutil.KeyUsageNames(parsed)
+		info.ExtKeyUsage = certutil.ExtKeyUsageNames(parsed)
 	}
 	if fp, err := certutil.FingerprintSHA256(cert.Cert); err == nil {
 		info.CertSHA256 = formatFingerprint(fp)
@@ -327,21 +345,18 @@ func (a *App) ParseCertificateHandler(c *gin.Context, user *models.User) {
 		return
 	}
 
-	certType := "未知类型"
+	certType := "未指定"
 	if certutil.IsCACertificate(parsed) {
 		certType = "CA 证书"
 	} else {
-		hasServer := false
-		for _, eku := range parsed.ExtKeyUsage {
-			if eku == x509.ExtKeyUsageServerAuth {
-				hasServer = true
-				break
-			}
-		}
-		if hasServer {
+		serverAuth, clientAuth := certutil.CertKeyUsage(parsed)
+		switch models.CertTypeFromEKU(serverAuth, clientAuth) {
+		case models.CERT_TYPE_SERVER:
 			certType = "服务器证书"
-		} else {
+		case models.CERT_TYPE_CLIENT:
 			certType = "客户端证书"
+		default:
+			certType = "未指定"
 		}
 	}
 
@@ -437,8 +452,8 @@ func (a *App) SignCertificateHandler(c *gin.Context, user *models.User) {
 		c.JSON(400, gin.H{"result": "failed", "error": err.Error()})
 		return
 	}
-	if param.CertType != models.CERT_TYPE_SERVER && param.CertType != models.CERT_TYPE_CLIENT {
-		c.JSON(400, gin.H{"result": "failed", "error": "证书类型必须是服务器证书或客户端证书"})
+	if param.CertType != models.CERT_TYPE_SERVER && param.CertType != models.CERT_TYPE_CLIENT && param.CertType != models.CERT_TYPE_UNSPECIFIED {
+		c.JSON(400, gin.H{"result": "failed", "error": "证书类型必须是服务器证书、客户端证书或未指定"})
 		return
 	}
 	ca, err := a.daoManager.GetCertificateByID(param.CAID)
@@ -464,7 +479,7 @@ func (a *App) SignCertificateHandler(c *gin.Context, user *models.User) {
 		EmailAddress:       param.EmailAddress,
 		Days:               param.Days,
 		ServerAuth:         param.CertType == models.CERT_TYPE_SERVER,
-		ClientAuth:         true,
+		ClientAuth:         param.CertType == models.CERT_TYPE_CLIENT,
 		Key:                certKeyOptions(param.KeyType, param.RSABits, param.ECCurve),
 	})
 	if err != nil {
@@ -480,11 +495,12 @@ func (a *App) SignCertificateHandler(c *gin.Context, user *models.User) {
 	c.JSON(200, gin.H{"result": "success", "error": nil, "data": toCertListItem(cert)})
 }
 
-// ImportCertificateHandler 导入证书（私钥可选）。导入的服务器/客户端证书必须由指定 CA 签发。
+// ImportCertificateHandler 导入证书（私钥可选）。
+// 证书类型由证书的扩展密钥用法自动识别（CA / 服务器 / 客户端 / 未指定）；
+// 导入的非 CA 证书必须由指定 CA 签发。
 func (a *App) ImportCertificateHandler(c *gin.Context, user *models.User) {
 	type Param struct {
 		Name        string `json:"name" binding:"required,min=1,max=100"`
-		CertType    uint   `json:"cert_type" binding:"required"`
 		ParentID    uint   `json:"parent_id"`
 		Cert        string `json:"cert" binding:"required"`
 		Key         string `json:"key"`
@@ -501,15 +517,12 @@ func (a *App) ImportCertificateHandler(c *gin.Context, user *models.User) {
 		return
 	}
 
+	var certType uint
 	var parentID uint
-	switch param.CertType {
-	case models.CERT_TYPE_CA:
-		if !certutil.IsCACertificate(parsed) {
-			c.JSON(400, gin.H{"result": "failed", "error": "导入的证书不是 CA 证书"})
-			return
-		}
+	if certutil.IsCACertificate(parsed) {
+		certType = models.CERT_TYPE_CA
 		parentID = 0
-	case models.CERT_TYPE_SERVER, models.CERT_TYPE_CLIENT:
+	} else {
 		if param.ParentID == 0 {
 			c.JSON(400, gin.H{"result": "failed", "error": "导入服务器/客户端证书必须指定上级 CA"})
 			return
@@ -527,10 +540,9 @@ func (a *App) ImportCertificateHandler(c *gin.Context, user *models.User) {
 			c.JSON(400, gin.H{"result": "failed", "error": "该证书不是此 CA 签发，无法导入: " + err.Error()})
 			return
 		}
+		serverAuth, clientAuth := certutil.CertKeyUsage(parsed)
+		certType = models.CertTypeFromEKU(serverAuth, clientAuth)
 		parentID = param.ParentID
-	default:
-		c.JSON(400, gin.H{"result": "failed", "error": "证书类型无效"})
-		return
 	}
 
 	keyType := ""
@@ -548,7 +560,7 @@ func (a *App) ImportCertificateHandler(c *gin.Context, user *models.User) {
 
 	cert := &models.Certificate{
 		Name:         param.Name,
-		Type:         param.CertType,
+		Type:         certType,
 		ParentID:     parentID,
 		Cert:         strings.TrimSpace(param.Cert) + "\n",
 		Key:          strings.TrimSpace(param.Key),

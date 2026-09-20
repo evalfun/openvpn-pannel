@@ -21,7 +21,11 @@ import {
   Stack,
   Chip,
   FormControl,
+  FormControlLabel,
+  FormLabel,
   InputLabel,
+  Radio,
+  RadioGroup,
   Select,
   MenuItem,
   IconButton,
@@ -48,6 +52,7 @@ import { certificateAPI } from '../api';
 export const CERT_TYPE_CA = 1;
 export const CERT_TYPE_SERVER = 2;
 export const CERT_TYPE_CLIENT = 3;
+export const CERT_TYPE_UNSPECIFIED = 4;
 
 const certTypeLabel = (type) => {
   switch (type) {
@@ -57,6 +62,8 @@ const certTypeLabel = (type) => {
       return '服务器证书';
     case CERT_TYPE_CLIENT:
       return '客户端证书';
+    case CERT_TYPE_UNSPECIFIED:
+      return '未指定';
     default:
       return '未知';
   }
@@ -196,7 +203,7 @@ const Certificates = () => {
   const [subjectDialog, setSubjectDialog] = useState({ open: false, cert: null });
   const [genCADialog, setGenCADialog] = useState(false);
   const [signDialog, setSignDialog] = useState({ open: false, certType: CERT_TYPE_SERVER });
-  const [importDialog, setImportDialog] = useState({ open: false, certType: CERT_TYPE_SERVER });
+  const [importDialog, setImportDialog] = useState({ open: false });
   const [busy, setBusy] = useState(false);
   const [dialogError, setDialogError] = useState('');
 
@@ -213,7 +220,7 @@ const Certificates = () => {
     days: 3650,
     description: '',
   });
-  const [importForm, setImportForm] = useState({ name: '', cert: '', key: '', description: '', cert_type: CERT_TYPE_SERVER });
+  const [importForm, setImportForm] = useState({ name: '', cert: '', key: '', description: '' });
 
   const loadCerts = useCallback(async () => {
     try {
@@ -300,15 +307,13 @@ const Certificates = () => {
         description: importForm.description,
       };
       if (isLevel2) {
-        payload.cert_type = importForm.cert_type;
         payload.parent_id = Number(caId);
-      } else {
-        payload.cert_type = CERT_TYPE_CA;
       }
-      await certificateAPI.importCert(payload);
-      setSuccess('证书已导入');
-      setImportDialog({ open: false, certType: CERT_TYPE_SERVER });
-      setImportForm({ name: '', cert: '', key: '', description: '', cert_type: CERT_TYPE_SERVER });
+      const res = await certificateAPI.importCert(payload);
+      const detected = res.data?.data?.type;
+      setSuccess(detected ? `证书已导入（识别类型：${certTypeLabel(detected)}）` : '证书已导入');
+      setImportDialog({ open: false });
+      setImportForm({ name: '', cert: '', key: '', description: '' });
       setDialogError('');
       loadCerts();
     } catch (err) {
@@ -473,17 +478,9 @@ const Certificates = () => {
                 disabled={!canSign}
                 onClick={() => { resetForm(); setSignDialog({ open: true, certType: CERT_TYPE_SERVER }); }}
               >
-                签发服务器证书
+                签发证书
               </Button>
-              <Button
-                variant="contained"
-                startIcon={<AddIcon />}
-                disabled={!canSign}
-                onClick={() => { resetForm(); setSignDialog({ open: true, certType: CERT_TYPE_CLIENT }); }}
-              >
-                签发客户端证书
-              </Button>
-              <Button variant="outlined" startIcon={<UploadIcon />} onClick={() => { setDialogError(''); setImportDialog({ open: true, certType: CERT_TYPE_SERVER }); }}>
+              <Button variant="outlined" startIcon={<UploadIcon />} onClick={() => { setDialogError(''); setImportDialog({ open: true }); }}>
                 导入证书
               </Button>
             </>
@@ -651,6 +648,8 @@ const Certificates = () => {
             const rows = [
               { label: '名称', value: d.name },
               { label: '类型', value: certTypeLabel(d.type) },
+              { label: '证书用途', value: (d.ext_key_usage || []).join('、') || '未指定（未设置扩展密钥用法）' },
+              { label: '密钥用法', value: (d.key_usage || []).join('、') || '-' },
               { label: '主题', value: subjectLines(d.subject), pre: true },
               { label: '颁发者', value: subjectLines(d.issuer), pre: true },
               { label: '序列号', value: d.serial_number, mono: true },
@@ -745,9 +744,7 @@ const Certificates = () => {
       {(() => {
         const isSign = signDialog.open;
         const open = genCADialog || signDialog.open;
-        const title = isSign
-          ? (signDialog.certType === CERT_TYPE_SERVER ? '签发服务器证书' : '签发客户端证书')
-          : '生成新 CA';
+        const title = isSign ? '签发证书' : '生成新 CA';
         const submit = isSign ? handleSign : handleGenerateCA;
         const close = () => {
           if (isSign) setSignDialog({ open: false, certType: CERT_TYPE_SERVER });
@@ -759,6 +756,23 @@ const Certificates = () => {
             <DialogTitle>{title}</DialogTitle>
             <DialogContent sx={{ paddingTop: 2 }}>
               {dialogError && <Alert severity="error" sx={{ marginBottom: 2 }}>{dialogError}</Alert>}
+              {isSign && (
+                <FormControl component="fieldset" margin="normal">
+                  <FormLabel component="legend">证书类型</FormLabel>
+                  <RadioGroup
+                    row
+                    value={String(signDialog.certType)}
+                    onChange={(e) => setSignDialog((prev) => ({ ...prev, certType: Number(e.target.value) }))}
+                  >
+                    <FormControlLabel value={String(CERT_TYPE_SERVER)} control={<Radio />} label="服务器证书" />
+                    <FormControlLabel value={String(CERT_TYPE_CLIENT)} control={<Radio />} label="客户端证书" />
+                    <FormControlLabel value={String(CERT_TYPE_UNSPECIFIED)} control={<Radio />} label="未指定" />
+                  </RadioGroup>
+                  <Typography variant="caption" color="textSecondary">
+                    服务器证书仅含 serverAuth 用途，客户端证书仅含 clientAuth 用途，未指定则不写入扩展密钥用法。
+                  </Typography>
+                </FormControl>
+              )}
               <TextField fullWidth margin="normal" label="名称" required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
               <TextField fullWidth margin="normal" label="Common Name (CN)" required value={form.common_name} onChange={(e) => setForm({ ...form, common_name: e.target.value })} />
               <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 2 }}>
@@ -787,13 +801,16 @@ const Certificates = () => {
       {/* 导入证书 */}
       <Dialog
         open={importDialog.open}
-        onClose={() => { setImportDialog({ open: false, certType: CERT_TYPE_SERVER }); setDialogError(''); }}
+        onClose={() => { setImportDialog({ open: false }); setDialogError(''); }}
         maxWidth="md"
         fullWidth
        fullScreen={isMobile}>
         <DialogTitle>{isLevel2 ? '导入证书' : '导入 CA 证书'}</DialogTitle>
         <DialogContent sx={{ paddingTop: 2 }}>
           {dialogError && <Alert severity="error" sx={{ marginBottom: 2 }}>{dialogError}</Alert>}
+          <Typography variant="body2" color="textSecondary" sx={{ marginTop: 1 }}>
+            证书类型将根据证书的扩展密钥用法自动识别为服务器证书、客户端证书或未指定。
+          </Typography>
           <TextField
             fullWidth
             margin="normal"
@@ -802,19 +819,6 @@ const Certificates = () => {
             value={importForm.name}
             onChange={(e) => setImportForm({ ...importForm, name: e.target.value })}
           />
-          {isLevel2 && (
-            <FormControl margin="normal" sx={{ minWidth: 200 }}>
-              <InputLabel>证书类型</InputLabel>
-              <Select
-                value={importForm.cert_type}
-                label="证书类型"
-                onChange={(e) => setImportForm({ ...importForm, cert_type: Number(e.target.value) })}
-              >
-                <MenuItem value={CERT_TYPE_SERVER}>服务器证书</MenuItem>
-                <MenuItem value={CERT_TYPE_CLIENT}>客户端证书</MenuItem>
-              </Select>
-            </FormControl>
-          )}
           <TextField
             fullWidth
             margin="normal"
@@ -847,7 +851,7 @@ const Certificates = () => {
           />
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => { setImportDialog({ open: false, certType: CERT_TYPE_SERVER }); setDialogError(''); }} disabled={busy}>
+          <Button onClick={() => { setImportDialog({ open: false }); setDialogError(''); }} disabled={busy}>
             取消
           </Button>
           <Button onClick={handleImport} variant="contained" disabled={busy || !importForm.name || !importForm.cert}>

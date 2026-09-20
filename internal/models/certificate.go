@@ -6,7 +6,23 @@ const (
 	CERT_TYPE_CA     = 1
 	CERT_TYPE_SERVER = 2
 	CERT_TYPE_CLIENT = 3
+	// CERT_TYPE_UNSPECIFIED 表示未能依据扩展密钥用法判定用途的证书（既无 serverAuth 也无 clientAuth，
+	// 或同时包含两者）。OpenVPN 的 --remote-cert-tls client|server 依据 RFC 3280 的密钥用法区分用途。
+	CERT_TYPE_UNSPECIFIED = 4
 )
+
+// CertTypeFromEKU 依据扩展密钥用法判定的角色映射为证书类型。
+// roleServer/roleClient 为 true 时对应服务器/客户端；两者相同（同为 true 或同为 false）视为未指定。
+func CertTypeFromEKU(hasServerAuth, hasClientAuth bool) uint {
+	switch {
+	case hasServerAuth && !hasClientAuth:
+		return CERT_TYPE_SERVER
+	case hasClientAuth && !hasServerAuth:
+		return CERT_TYPE_CLIENT
+	default:
+		return CERT_TYPE_UNSPECIFIED
+	}
+}
 
 const (
 	CERT_KEY_TYPE_RSA = "rsa"

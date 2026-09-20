@@ -88,6 +88,22 @@ const subjectCommonName = (subject) => {
   return '';
 };
 
+// 证书类型标签（与后端 models.Certificate.Type 对应）
+const certTypeLabel = (type) => {
+  switch (type) {
+    case 1:
+      return 'CA 证书';
+    case 2:
+      return '服务器证书';
+    case 3:
+      return '客户端证书';
+    case 4:
+      return '未指定';
+    default:
+      return '未知';
+  }
+};
+
 // 证书字段的只读摘要：显示所选证书信息，或手动填写证书的解析结果
 const CertSummary = ({ value, info, manual, kind = 'cert' }) => {
   const ref = parseCertRef(value);
@@ -432,7 +448,7 @@ const ServerManagement = () => {
   };
 
   // 打开证书选择：target 为 ca / cert。选择服务器证书时会同时选中其私钥。
-  // target=cert 时，若已选择 CA，则只列出该 CA 签发的服务器证书。
+  // target=cert 时，若已选择 CA，则只列出该 CA 签发的服务器证书或未指定证书。
   const openCertSelect = async (target, page = 1) => {
     let caId = null;
     if (target === 'cert') {
@@ -443,7 +459,7 @@ const ServerManagement = () => {
     if (target === 'ca') {
       params.type = 1;
     } else {
-      params.type = 2;
+      params.types = [2, 4];
       params.hasKey = 1;
       if (caId) params.parentId = caId;
     }
@@ -582,7 +598,7 @@ const ServerManagement = () => {
       const data = res.data.data || {};
       const ref = parseCertRef(data.ca);
       if (ref) {
-        const certRes = await certificateAPI.list({ type: 3, parentId: ref.id });
+        const certRes = await certificateAPI.list({ types: [3, 4], parentId: ref.id });
         setExportDialog((prev) => ({
           ...prev,
           serverId,
@@ -870,7 +886,7 @@ const ServerManagement = () => {
           const info = infoRes.data?.data;
           if (info && parseCertRef(info.cert)) {
             const caRef = parseCertRef(info.ca);
-            const params = { type: 3, pageSize: 0 };
+            const params = { types: [3, 4], pageSize: 0 };
             if (caRef) params.parentId = caRef.id;
             const certRes = await certificateAPI.list(params);
             const cns = (certRes.data.data || [])
@@ -1513,6 +1529,7 @@ const ServerManagement = () => {
             margin="normal"
             multiline
             rows={5}
+            helperText='可添加 remote-cert-tls client 限制客户端证书类型（要求客户端证书含 clientAuth 用途）。'
             placeholder='mssfix 1308
 push "route 10.0.2.0 255.255.255.0"
 push "dhcp-option DNS [IP 網址]"
@@ -2281,11 +2298,11 @@ push "redirect-gateway def1"'
           {certSelect.target === 'cert' && (
             certSelect.caId ? (
               <Alert severity="info" sx={{ marginTop: 1, marginBottom: 1 }}>
-                仅列出所选 CA 签发的服务器证书；选择后会同时使用其私钥。
+                仅列出所选 CA 签发的服务器证书或未指定证书；选择后会同时使用其私钥。
               </Alert>
             ) : (
               <Alert severity="warning" sx={{ marginTop: 1, marginBottom: 1 }}>
-                未选择 CA 证书，以下列出所有服务器证书。请确保所选证书是 CA 证书签发的服务器证书，否则无法工作。
+                未选择 CA 证书，以下列出所有服务器证书与未指定证书。请确保所选证书是 CA 证书签发的服务器证书，否则无法工作。
               </Alert>
             )
           )}
@@ -2298,6 +2315,7 @@ push "redirect-gateway def1"'
                   <TableHead>
                     <TableRow>
                       <TableCell>名称</TableCell>
+                      <TableCell>类型</TableCell>
                       <TableCell>主题</TableCell>
                       <TableCell>到期时间</TableCell>
                       <TableCell>操作</TableCell>
@@ -2305,11 +2323,12 @@ push "redirect-gateway def1"'
                   </TableHead>
                   <TableBody>
                     {certSelect.certs.length === 0 ? (
-                      <TableRow><TableCell colSpan={4} align="center">暂无可选证书</TableCell></TableRow>
+                      <TableRow><TableCell colSpan={5} align="center">暂无可选证书</TableCell></TableRow>
                     ) : (
                       certSelect.certs.map((cert) => (
                         <TableRow key={cert.id} hover>
                           <TableCell>{cert.name}</TableCell>
+                          <TableCell>{certTypeLabel(cert.type)}</TableCell>
                           <TableCell sx={{ maxWidth: 240, wordBreak: 'break-all' }}>{cert.subject}</TableCell>
                           <TableCell>{cert.not_after ? new Date(cert.not_after * 1000).toLocaleDateString() : '-'}</TableCell>
                           <TableCell><Button size="small" onClick={() => applyCertSelect(cert)}>选择</Button></TableCell>
@@ -2387,7 +2406,7 @@ push "redirect-gateway def1"'
               {exportDialog.serverId && exportDialog.mode === 'select' && (
                 <>
                   <Alert severity="info" sx={{ marginTop: 1 }}>
-                    仅列出该服务器 CA 签发的客户端证书。
+                    仅列出该服务器 CA 签发的客户端证书或未指定证书。
                   </Alert>
                   <TextField
                     select
@@ -2398,11 +2417,11 @@ push "redirect-gateway def1"'
                     onChange={(e) => setExportDialog((prev) => ({ ...prev, certId: e.target.value }))}
                   >
                     {exportDialog.clientCerts.length === 0 ? (
-                      <MenuItem value="" disabled>该 CA 下没有可用的客户端证书</MenuItem>
+                      <MenuItem value="" disabled>该 CA 下没有可用的客户端证书或未指定证书</MenuItem>
                     ) : (
                       exportDialog.clientCerts.map((cert) => (
                         <MenuItem key={cert.id} value={cert.id}>
-                          {cert.name}{cert.has_key ? '' : '（无私钥）'}
+                          {cert.name}{cert.type === 4 ? '（未指定）' : ''}{cert.has_key ? '' : '（无私钥）'}
                         </MenuItem>
                       ))
                     )}
@@ -2464,7 +2483,7 @@ push "redirect-gateway def1"'
                 value={exportDialog.extraConfig}
                 onChange={(e) => setExportDialog((prev) => ({ ...prev, extraConfig: e.target.value }))}
                 placeholder={'将追加到导出配置末尾，例如：\nmssfix 1308\nredirect-gateway def1'}
-                helperText="随服务器地址一起保存，下次导出自动回填"
+                helperText="随服务器地址一起保存，下次导出自动回填；可添加 remote-cert-tls server 限制服务端证书类型（要求服务端证书含 serverAuth 用途）"
                 sx={{ '& textarea': { fontFamily: 'monospace', fontSize: 12 } }}
               />
             </>

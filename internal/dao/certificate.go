@@ -46,6 +46,8 @@ func (um *DaoManager) ListAllCertificate() ([]*models.Certificate, error) {
 type CertificateListQuery struct {
 	FilterType   bool
 	CertType     uint
+	FilterTypes  bool
+	CertTypes    []uint
 	FilterParent bool
 	ParentID     uint
 	OnlyWithKey  bool
@@ -58,6 +60,9 @@ func (um *DaoManager) ListCertificateQuery(q CertificateListQuery) ([]*models.Ce
 	db := um.DB.Model(&models.Certificate{})
 	if q.FilterType {
 		db = db.Where("type = ?", q.CertType)
+	}
+	if q.FilterTypes && len(q.CertTypes) > 0 {
+		db = db.Where("type IN ?", q.CertTypes)
 	}
 	if q.FilterParent {
 		db = db.Where("parent_id = ?", q.ParentID)

@@ -1,6 +1,7 @@
 package certutil
 
 import (
+	"crypto/x509"
 	"crypto/x509/pkix"
 	"os"
 	"testing"
@@ -51,6 +52,68 @@ func TestFingerprints(t *testing.T) {
 	if certFP == pubFP {
 		t.Fatalf("certificate and public key fingerprints should differ")
 	}
+}
+
+func TestCertKeyUsageRoles(t *testing.T) {
+	ca, err := GenerateCA(CertOptions{CommonName: "Role CA", Key: KeyOptions{KeyType: KeyTypeEC, ECCurve: "P256"}})
+	if err != nil {
+		t.Fatalf("generate CA: %v", err)
+	}
+	server, err := SignCert(ca.CertPEM, ca.KeyPEM, CertOptions{
+		CommonName: "srv", ServerAuth: true, Key: KeyOptions{KeyType: KeyTypeRSA, RSABits: 2048},
+	})
+	if err != nil {
+		t.Fatalf("sign server: %v", err)
+	}
+	client, err := SignCert(ca.CertPEM, ca.KeyPEM, CertOptions{
+		CommonName: "cli", ClientAuth: true, Key: KeyOptions{KeyType: KeyTypeRSA, RSABits: 2048},
+	})
+	if err != nil {
+		t.Fatalf("sign client: %v", err)
+	}
+	unspecified, err := SignCert(ca.CertPEM, ca.KeyPEM, CertOptions{
+		CommonName: "any", Key: KeyOptions{KeyType: KeyTypeRSA, RSABits: 2048},
+	})
+	if err != nil {
+		t.Fatalf("sign unspecified: %v", err)
+	}
+
+	cases := []struct {
+		name       string
+		pem        string
+		wantServer bool
+		wantClient bool
+	}{
+		{"server", server.CertPEM, true, false},
+		{"client", client.CertPEM, false, true},
+		{"unspecified", unspecified.CertPEM, false, false},
+	}
+	for _, tc := range cases {
+		cert, err := ParseCertificate(tc.pem)
+		if err != nil {
+			t.Fatalf("%s parse: %v", tc.name, err)
+		}
+		gotServer, gotClient := CertKeyUsage(cert)
+		if gotServer != tc.wantServer || gotClient != tc.wantClient {
+			t.Fatalf("%s: got server=%v client=%v, want server=%v client=%v",
+				tc.name, gotServer, gotClient, tc.wantServer, tc.wantClient)
+		}
+	}
+	if names := ExtKeyUsageNames(mustParse(t, server.CertPEM)); len(names) != 1 || names[0] != "TLS Web Server Authentication (serverAuth)" {
+		t.Fatalf("server ext key usage names: %v", names)
+	}
+	if names := ExtKeyUsageNames(mustParse(t, unspecified.CertPEM)); len(names) != 0 {
+		t.Fatalf("unspecified ext key usage names should be empty: %v", names)
+	}
+}
+
+func mustParse(t *testing.T, pem string) *x509.Certificate {
+	t.Helper()
+	cert, err := ParseCertificate(pem)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	return cert
 }
 
 func TestValidateSignedByRejectsForeignCA(t *testing.T) {

@@ -275,9 +275,7 @@ func generateCertificate(opt CertOptions, parent *x509.Certificate, parentKey cr
 		if opt.ClientAuth {
 			tmpl.ExtKeyUsage = append(tmpl.ExtKeyUsage, x509.ExtKeyUsageClientAuth)
 		}
-		if len(tmpl.ExtKeyUsage) == 0 {
-			tmpl.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
-		}
+		// 两者都不指定时不写入扩展密钥用法，表示“未指定”用途的证书。
 	}
 
 	parentCert := tmpl
@@ -309,6 +307,102 @@ func generateCertificate(opt CertOptions, parent *x509.Certificate, parentKey cr
 		NotBefore:    parsed.NotBefore.Unix(),
 		NotAfter:     parsed.NotAfter.Unix(),
 	}, nil
+}
+
+// CertKeyUsage 返回证书扩展密钥用法中是否包含服务器用途与客户端用途。
+// 该判定与 OpenVPN --remote-cert-tls client|server 依据的 RFC 3280 规则一致。
+func CertKeyUsage(cert *x509.Certificate) (serverAuth, clientAuth bool) {
+	if cert == nil {
+		return false, false
+	}
+	for _, eku := range cert.ExtKeyUsage {
+		switch eku {
+		case x509.ExtKeyUsageServerAuth:
+			serverAuth = true
+		case x509.ExtKeyUsageClientAuth:
+			clientAuth = true
+		}
+	}
+	return serverAuth, clientAuth
+}
+
+// ExtKeyUsageNames 返回证书扩展密钥用法的可读名称列表。
+func ExtKeyUsageNames(cert *x509.Certificate) []string {
+	if cert == nil {
+		return nil
+	}
+	names := make([]string, 0, len(cert.ExtKeyUsage))
+	for _, eku := range cert.ExtKeyUsage {
+		names = append(names, extKeyUsageName(eku))
+	}
+	return names
+}
+
+func extKeyUsageName(eku x509.ExtKeyUsage) string {
+	switch eku {
+	case x509.ExtKeyUsageAny:
+		return "Any"
+	case x509.ExtKeyUsageServerAuth:
+		return "TLS Web Server Authentication (serverAuth)"
+	case x509.ExtKeyUsageClientAuth:
+		return "TLS Web Client Authentication (clientAuth)"
+	case x509.ExtKeyUsageCodeSigning:
+		return "Code Signing"
+	case x509.ExtKeyUsageEmailProtection:
+		return "E-mail Protection"
+	case x509.ExtKeyUsageIPSECEndSystem:
+		return "IPSec End System"
+	case x509.ExtKeyUsageIPSECTunnel:
+		return "IPSec Tunnel"
+	case x509.ExtKeyUsageIPSECUser:
+		return "IPSec User"
+	case x509.ExtKeyUsageTimeStamping:
+		return "Time Stamping"
+	case x509.ExtKeyUsageOCSPSigning:
+		return "OCSP Signing"
+	case x509.ExtKeyUsageMicrosoftServerGatedCrypto:
+		return "Microsoft Server Gated Crypto"
+	case x509.ExtKeyUsageNetscapeServerGatedCrypto:
+		return "Netscape Server Gated Crypto"
+	}
+	return fmt.Sprintf("Unknown(%d)", int(eku))
+}
+
+// KeyUsageNames 返回证书密钥用法的可读名称列表。
+func KeyUsageNames(cert *x509.Certificate) []string {
+	if cert == nil {
+		return nil
+	}
+	ku := cert.KeyUsage
+	var names []string
+	if ku&x509.KeyUsageDigitalSignature != 0 {
+		names = append(names, "Digital Signature")
+	}
+	if ku&x509.KeyUsageContentCommitment != 0 {
+		names = append(names, "Content Commitment")
+	}
+	if ku&x509.KeyUsageKeyEncipherment != 0 {
+		names = append(names, "Key Encipherment")
+	}
+	if ku&x509.KeyUsageDataEncipherment != 0 {
+		names = append(names, "Data Encipherment")
+	}
+	if ku&x509.KeyUsageKeyAgreement != 0 {
+		names = append(names, "Key Agreement")
+	}
+	if ku&x509.KeyUsageCertSign != 0 {
+		names = append(names, "Certificate Sign")
+	}
+	if ku&x509.KeyUsageCRLSign != 0 {
+		names = append(names, "CRL Sign")
+	}
+	if ku&x509.KeyUsageEncipherOnly != 0 {
+		names = append(names, "Encipher Only")
+	}
+	if ku&x509.KeyUsageDecipherOnly != 0 {
+		names = append(names, "Decipher Only")
+	}
+	return names
 }
 
 // IsCACertificate 判断证书是否可作为 CA 使用。
