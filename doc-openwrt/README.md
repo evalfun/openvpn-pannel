@@ -98,15 +98,17 @@ chmod +x /etc/init.d/openvpn-pannel
 | --- | --- | --- |
 | 客户端上线脚本 | `client_online.sh` | 上线时放行 ACL（ipset）+ 设置下载限速 |
 | 客户端下线脚本 | `client_offline.sh` | 下线时回收 ACL 与限速 |
+| 达量限速更新脚本 | `ratelimit.sh` | 达量限速命中或解除时，对变化的客户端重设/移除 tc 限速 |
 | 服务端启动脚本 | `server_start.sh` | 初始化 ACL 链 / ipset |
 | 服务端退出脚本 | `server_exit.sh` | 回收 ACL 链 / ipset |
 | 杂项配置 | `misc` | 路径与文件名（`openvpn_path`、`shell_path` 等） |
 
-其余资源（`auth.sh`、OpenVPN `config` 模板、`help`）保持默认即可。
+其余资源（`auth.sh`、OpenVPN `config` 模板、`client-config` 模板、`help`）保持默认即可。
 
+> - **`ratelimit.sh` 是达量限速的运行时脚本**：面板每隔一段时间检查在线客户端的生效限速，只有当某个客户端的限速发生变化时，才把变化的客户端通过标准输入交给该脚本重设 tc。首次上线时的限速仍由 `client_online.sh` 设置。
 > - **`openvpn-pannel` 不是资源文件**，它是系统启动脚本，放到 `/etc/init.d/`（见 3.2）。
 > - 资源文件中形如 `__INTERNAL_API__`、`__WORKING_DIR__`、`__SERVER_ID__`、`__SERVER_INTERFACE__` 的占位符，由面板在保存/下发时自动填充，**请勿手动修改**。
-> - OpenWrt 版资源与通用版的主要差别：直接调用 `/usr/sbin/iptables` 等绝对路径、不依赖 `sudo`、`openvpn_path=/usr/sbin/openvpn`、`shell_path=/bin/bash`，且 tc 限速与 ACL 操作放入 `flock` 临界区串行化。
+> - OpenWrt 版资源与通用版的主要差别：直接调用 `/usr/sbin/iptables`（或 `/sbin/tc`）等绝对路径、不依赖 `sudo`、用 `/sys/class/net/<iface>` 判断接口是否存在、`openvpn_path=/usr/sbin/openvpn`、`shell_path=/bin/bash`，且 tc 限速与 ACL 操作放入 `flock` 临界区串行化。
 
 ### 3.5 新建防火墙区域
 
@@ -166,6 +168,7 @@ chmod +x /etc/init.d/openvpn-pannel
 | `openvpn-pannel` | `/etc/init.d/openvpn-pannel` | procd 启动脚本 |
 | `client_online.sh` | 面板 → 资源文件 | 上线：ACL 放行 + 限速（`flock` 串行化） |
 | `client_offline.sh` | 面板 → 资源文件 | 下线：回收 ACL + 限速（`flock` 串行化） |
+| `ratelimit.sh` | 面板 → 资源文件 | 达量限速变化时重设 / 移除 tc 限速（`flock` 串行化） |
 | `server_start.sh` | 面板 → 资源文件 | 服务端启动：初始化 ACL 链 / ipset |
 | `server_exit.sh` | 面板 → 资源文件 | 服务端退出：回收 ACL 链 / ipset |
 | `misc` | 面板 → 资源文件 | 路径 / 文件名配置 |
@@ -174,7 +177,7 @@ chmod +x /etc/init.d/openvpn-pannel
 
 ## 6. 常见问题
 
-- **限速不生效**：确认已安装 `tc`，且内核包含 `sch_htb`、`cls_u32`、`act_police`、`sch_ingress`。缺失时脚本会记录日志并跳过限速，不影响连接。
+- **限速不生效**：确认已安装 `tc`，且内核包含 `sch_htb`、`cls_u32`、`act_police`、`sch_ingress`；并在面板「资源文件」中把 `ratelimit.sh` 替换为本目录的 OpenWrt 版本。缺失时脚本会记录日志并跳过限速，不影响连接；达量限速在运行中变化时依赖 `ratelimit.sh` 重设 tc。
 - **ACL 未生效**：确认已安装 `ipset`。缺失时脚本会回落到逐条 `iptables` 模式（功能仍可用）。
 - **应用接口后地址消失**：属正常现象，见 3.6，重启服务器进程即可恢复。
 - **修改了资源脚本**：需在面板重新保存并重启服务，使新脚本生效。
