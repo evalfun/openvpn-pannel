@@ -142,6 +142,31 @@ func (um *DaoManager) ListUsersInGroup(groupID uint) ([]*models.User, error) {
 	return users, nil
 }
 
+// ListUsersInGroupPaged 分页列出用户组里的用户（可按用户名模糊搜索），同时返回总数。
+func (um *DaoManager) ListUsersInGroupPaged(groupID uint, query string, page, pageSize int) ([]*models.User, int64, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	base := um.DB.Model(&models.User{}).
+		Joins("JOIN user_groups ON users.id = user_groups.user_id").
+		Where("user_groups.group_id = ?", groupID)
+	if query != "" {
+		base = base.Where("users.username like ?", "%"+query+"%")
+	}
+	var count int64
+	if err := base.Count(&count).Error; err != nil {
+		return nil, 0, err
+	}
+	var users []*models.User
+	if err := base.Order("users.id asc").Limit(pageSize).Offset((page - 1) * pageSize).Find(&users).Error; err != nil {
+		return nil, 0, err
+	}
+	return users, count, nil
+}
+
 // 列出用户所在的用户组
 func (um *DaoManager) ListGroupsForUser(userID uint) ([]*models.Group, error) {
 	var groups []*models.Group

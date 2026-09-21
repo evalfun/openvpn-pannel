@@ -85,6 +85,3 @@ Thumbs.db
 !internal/assets/assets.go
 !internal/ovpn_server/assets.go
 
-# Local OpenWrt packaging/build scratch space
-openwrt/
-*.srl

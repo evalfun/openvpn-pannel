@@ -110,6 +110,16 @@ chmod +x /etc/init.d/openvpn-pannel
 > - 资源文件中形如 `__INTERNAL_API__`、`__WORKING_DIR__`、`__SERVER_ID__`、`__SERVER_INTERFACE__` 的占位符，由面板在保存/下发时自动填充，**请勿手动修改**。
 > - OpenWrt 版资源与通用版的主要差别：直接调用 `/usr/sbin/iptables`（或 `/sbin/tc`）等绝对路径、不依赖 `sudo`、用 `/sys/class/net/<iface>` 判断接口是否存在、`openvpn_path=/usr/sbin/openvpn`、`shell_path=/bin/bash`，且 tc 限速与 ACL 操作放入 `flock` 临界区串行化。
 
+> **可选的 nftables 版本（自行替换）**：本仓库 `nftables-script/openwrt/` 目录提供了把上述
+> 防火墙脚本从 `iptables` / `ipset` 换成纯 `nftables` 的版本，**面板不会自动使用，需你手动替换**。
+> 在面板「资源文件」中把 `client_online.sh`、`client_offline.sh`、`server_start.sh`、
+> `server_exit.sh` 四个文件替换为该目录下的同名文件并重启服务即可，`misc`、`ratelimit.sh`
+> 等其余资源保持原样。普通 Linux 请使用 `nftables-script/generic/`。
+>
+> 使用 nftables 版本时，请把 3.5 中 `openvpn` 区域的**转发（Forward）策略设为允许**：
+> 面板会在 fw4 之前（`priority -200`）用自身规则直接 `drop` 未放行的流量，从而实施真正的
+> 访问控制；若仍设为拒绝，fw4 会把面板已放行的流量一并拒绝。
+
 ### 3.5 新建防火墙区域
 
 在「网络 → 防火墙 → 区域」中新建区域 **`openvpn`**：
@@ -173,12 +183,16 @@ chmod +x /etc/init.d/openvpn-pannel
 | `server_exit.sh` | 面板 → 资源文件 | 服务端退出：回收 ACL 链 / ipset |
 | `misc` | 面板 → 资源文件 | 路径 / 文件名配置 |
 
+> 可选：需要纯 `nftables` 时，用仓库 `nftables-script/openwrt/` 下的
+> `client_online.sh`、`client_offline.sh`、`server_start.sh`、`server_exit.sh`
+> 手动替换上表中对应的资源文件（详见 3.4）。
+
 ---
 
 ## 6. 常见问题
 
 - **限速不生效**：确认已安装 `tc`，且内核包含 `sch_htb`、`cls_u32`、`act_police`、`sch_ingress`；并在面板「资源文件」中把 `ratelimit.sh` 替换为本目录的 OpenWrt 版本。缺失时脚本会记录日志并跳过限速，不影响连接；达量限速在运行中变化时依赖 `ratelimit.sh` 重设 tc。
-- **ACL 未生效**：确认已安装 `ipset`。缺失时脚本会回落到逐条 `iptables` 模式（功能仍可用）。
+- **ACL 未生效**：默认脚本确认已安装 `ipset`。缺失时脚本会回落到逐条 `iptables` 模式（功能仍可用）。若使用 `nftables-script/openwrt/` 的版本，则无需 `ipset` / `iptables`，但需安装 `nftables`，并确认服务端启动脚本成功建立了 `openvpn_acl_<服务器ID>` 表。
 - **应用接口后地址消失**：属正常现象，见 3.6，重启服务器进程即可恢复。
 - **修改了资源脚本**：需在面板重新保存并重启服务，使新脚本生效。
 - **改了 `config.json`**：同样需要重启服务才生效。

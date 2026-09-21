@@ -1223,8 +1223,14 @@ func (a *App) AutoStartOpenVPNServer() {
 }
 
 // autoStartServerLocked 启动单个自启动服务器，调用方需持有全局写锁 a.lock。
-// 内部按“全局锁 -> 实例锁”的顺序获取实例锁；使用 return 而非 continue，保证锁必然释放。
 func (a *App) autoStartServerLocked(serverModel *models.Server) {
+	a.startServerLocked(serverModel, "internal")
+}
+
+// startServerLocked 在持有全局写锁 a.lock 的前提下，(重新)创建并启动服务器实例。
+// 内部按“全局锁 -> 实例锁”的顺序获取实例锁；使用 return 而非 continue，保证锁必然释放。
+// source 用于服务器事件的来源标记（如 internal / keepalive）。
+func (a *App) startServerLocked(serverModel *models.Server, source string) {
 	serverInstance, ok := a.ovpnProcessList[serverModel.ID]
 	// 启停进程会改写实例的 cmd/pid，取实例写锁。
 	pl := a.getProcessLock(serverModel.ID)
@@ -1238,13 +1244,13 @@ func (a *App) autoStartServerLocked(serverModel *models.Server) {
 	serverRouteList, err := a.daoManager.ListOpenVPNServerRoute(serverModel.ID)
 	if err != nil {
 		log.Println("服务器启动失败: 列出服务端路由失败: " + err.Error())
-		a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_START_FAIL, "internal", "服务器启动失败: 列出服务端路由失败 "+err.Error())
+		a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_START_FAIL, source, "服务器启动失败: 列出服务端路由失败 "+err.Error())
 		return
 	}
 	clientConfigList, err := a.daoManager.ListOpenVPNServerClientConfig(serverModel.ID)
 	if err != nil {
 		log.Println("服务器启动失败: 列出客户端配置失败: " + err.Error())
-		a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_START_FAIL, "internal", "服务器启动失败: 列出客户端配置失败 "+err.Error())
+		a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_START_FAIL, source, "服务器启动失败: 列出客户端配置失败 "+err.Error())
 		return
 	}
 	resourceMap := a.PrepareResourceMap([]string{ovpnserver.RESOURCE_ID_CONFIG_TEMPLATE, ovpnserver.RESOURCE_ID_CLIENT_OFFLINE_SCRIPT, ovpnserver.RESOURCE_ID_CLIENT_ONLINE_SCRIPT, ovpnserver.RESOURCE_ID_AUTH_SCRIPT, ovpnserver.RESOURCE_ID_SERVER_START_SCRIPT, ovpnserver.RESOURCE_ID_MISC_CONFIG})
@@ -1259,7 +1265,7 @@ func (a *App) autoStartServerLocked(serverModel *models.Server) {
 	err = json.Unmarshal([]byte(miscConfigStr), &miscConfigModel)
 	if err != nil {
 		log.Println("服务器启动失败: 解析杂项配置失败: " + err.Error())
-		a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_START_FAIL, "internal", "服务器启动失败: 解析杂项配置失败 "+err.Error())
+		a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_START_FAIL, source, "服务器启动失败: 解析杂项配置失败 "+err.Error())
 		return
 	}
 	serverInstance = ovpnserver.NewOpenVPNServerInstance(a.resolvedServerModel(serverModel), serverRouteList, clientConfigList, fmt.Sprintf("%s/%d", a.cfg.WorkingDir, serverModel.ID), a.cfg.InternalAPIListen, miscConfigModel.OpenVPNPath)
@@ -1268,16 +1274,16 @@ func (a *App) autoStartServerLocked(serverModel *models.Server) {
 	err = serverInstance.WriteConfig(resourceMap)
 	if err != nil {
 		log.Println("服务器启动失败: 配置文件写入失败: " + err.Error())
-		a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_START_FAIL, "internal", "服务器启动失败: 配置文件写入失败 "+err.Error())
+		a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_START_FAIL, source, "服务器启动失败: 配置文件写入失败 "+err.Error())
 		return
 	}
 	err = serverInstance.Start(resourceMap)
 	if err != nil {
 		log.Println("服务器启动失败: " + err.Error())
-		a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_START_FAIL, "internal", "服务器启动失败: "+err.Error())
+		a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_START_FAIL, source, "服务器启动失败: "+err.Error())
 		return
 	}
-	a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_START_SUCCESS, "internal", "服务器启动成功")
+	a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_START_SUCCESS, source, "服务器启动成功")
 	a.daoManager.DeleteAddedACLByServerID(serverModel.ID)
 	a.daoManager.DeleteConnectedClientInfoRecordByServerID(serverModel.ID)
 }

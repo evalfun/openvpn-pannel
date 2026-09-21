@@ -120,8 +120,12 @@ export const groupAPI = {
   // 创建用户组
   createGroup: (data) => client.post('/group/create', data),
   
-  // 获取用户组中的用户列表
-  getGroupUsers: (group) => client.get(`/group/user/list?group=${group}`),
+  // 获取用户组中的用户列表（支持分页）
+  getGroupUsers: (group, page = 1, pageSize = 20, query = '') => {
+    let url = `/group/user/list?group=${encodeURIComponent(group)}&page=${page}&page_size=${pageSize}`;
+    if (query) url += `&query=${encodeURIComponent(query)}`;
+    return client.get(url);
+  },
   
   // 将用户添加到用户组
   addUserToGroup: (data) => client.post('/group/user/add', data),
@@ -166,6 +170,9 @@ export const userManageAPI = {
   
   // 创建用户
   createUser: (data) => client.post('/user/create', data),
+
+  // 通过 CSV 批量创建用户（返回逐行结果）
+  createUsersBatch: (csv) => client.post('/user/create/batch', { csv }),
   
   // 更新用户信息
   updateUserInfo: (data) => client.post('/user/info', data),

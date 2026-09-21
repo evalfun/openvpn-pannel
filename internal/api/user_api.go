@@ -64,6 +64,8 @@ func (a *App) UserLoginHandler(c *gin.Context) {
 func (a *App) UserLogoutHandler(c *gin.Context) {
 	session := sessions.Default(c)
 	session.Clear()
+	// MaxAge=-1 让服务端会话存储删除该会话，并让浏览器立即丢弃 Cookie。
+	session.Options(sessions.Options{Path: "/", HttpOnly: true, MaxAge: -1})
 	session.Save()
 	c.JSON(200, gin.H{
 		"result": "success",

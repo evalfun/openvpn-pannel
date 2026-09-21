@@ -21,7 +21,8 @@ const Login = () => {
   const [message, setMessage] = useState('');
 
   const handleLogin = async (e) => {
-    e.preventDefault();
+    if (e) e.preventDefault();
+    if (isLoading) return;
     setError('');
     setMessage('');
     setIsLoading(true);
@@ -32,7 +33,6 @@ const Login = () => {
 
       if (loginResponse.status === 200 && loginResponse.data.result === 'success') {
         setMessage('登录成功！');
-        console.log("登录信息", loginResponse.data)
         // 立即请求用户信息以验证权限
         const userInfoResponse = await userAPI.getUserInfo();
 
@@ -54,17 +54,13 @@ const Login = () => {
             setIsLoading(false);
           }
         }
+      } else {
+        setError('登录失败：用户名或密码错误');
+        setIsLoading(false);
       }
     } catch (err) {
-      setError('登录失败：' + (err.response?.data?.error || '请重试'));
+      setError('登录失败：' + (err.response?.data?.error || '用户名或密码错误'));
       setIsLoading(false);
-    }
-  };
-
-  // 处理回车键登录
-  const handleKeyPress = (e) => {
-    if (e.key === 'Enter' && !isLoading) {
-      handleLogin(e);
     }
   };
 
@@ -90,7 +86,6 @@ const Login = () => {
               label="用户名"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              onKeyPress={handleKeyPress}
               margin="normal"
               disabled={isLoading}
               required
@@ -101,17 +96,16 @@ const Login = () => {
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              onKeyPress={handleKeyPress}
               margin="normal"
               disabled={isLoading}
               required
             />
             <Button
               fullWidth
+              type="submit"
               variant="contained"
               color="primary"
               sx={{ marginTop: 3 }}
-              onClick={handleLogin}
               disabled={isLoading}
             >
               {isLoading ? <CircularProgress size={24} /> : '登录'}

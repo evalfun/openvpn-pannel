@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -34,6 +35,12 @@ type OpenVPNServerInstance struct {
 	openvpnPath       string
 	pid               int
 	cmd               *exec.Cmd
+	// exited 在进程退出并被 Wait 回收后关闭。Running 据此判定存活，
+	// 避免进程退出后仍处于僵尸态时 signal 0 成功而误判为存活。
+	exited chan struct{}
+	// keepAlive 表示面板期望该实例进程保持运行（原子访问）。为 1 时，
+	// 看门狗会在检测到进程异常退出后重新拉起；主动停止时清 0，避免被拉起。
+	keepAlive int32
 }
 
 func (ins *OpenVPNServerInstance) GetServerModel() *models.Server {
@@ -196,6 +203,19 @@ func (ins *OpenVPNServerInstance) Start(resourceMap map[string]string) error {
 	if err := ins.cmd.Start(); err != nil {
 		return fmt.Errorf("启动openvpn进程失败: %s", err.Error())
 	}
+	// 后台回收子进程并在退出时关闭 exited：不连接 management socket，
+	// 仅凭子进程状态即可判定存活，不会产生额外 openvpn 日志。
+	exited := make(chan struct{})
+	ins.exited = exited
+	startedCmd := ins.cmd
+	atomic.StoreInt32(&ins.keepAlive, 1)
+	go func() {
+		waitErr := startedCmd.Wait()
+		if atomic.LoadInt32(&ins.keepAlive) == 1 {
+			log.Printf("OpenVPN server %d 进程意外退出 PID: %d %v\n", ins.serverConfig.ID, startedCmd.Process.Pid, waitErr)
+		}
+		close(exited)
+	}()
 	log.Printf("OpenVPN server %d 进程启动 PID: %d\n", ins.serverConfig.ID, ins.cmd.Process.Pid)
 	// 执行启动脚本
 	server_start_script, ok := resourceMap[RESOURCE_ID_SERVER_START_SCRIPT]
@@ -223,41 +243,36 @@ func (ins *OpenVPNServerInstance) Stop(resourceMap map[string]string) error {
 	if err != nil {
 		return fmt.Errorf("获取其他配置失败: %s", err.Error())
 	}
-	done := make(chan error, 1)
-	go func() {
-		done <- ins.cmd.Wait() // 阻塞直到进程退出
-	}()
+	// 先清除保活标记：主动停止的进程不允许被看门狗重新拉起。
+	ins.SetKeepAlive(false)
 	log.Printf("OpenVPN server %d 进程停止 PID: %d\n", ins.serverConfig.ID, ins.cmd.Process.Pid)
 	ins.cmd.Process.Signal(os.Interrupt)
-	select {
-	case err := <-done:
-		// 子进程在 8 秒内退出
-		if err != nil {
-			log.Printf("OpenVPN server %d 进程停止失败 PID: %d %v\n", ins.serverConfig.ID, ins.cmd.Process.Pid, err)
-
-		} else {
+	// 子进程由 Start 里启动的 Wait 协程回收，这里只等待其退出信号，避免重复调用 Wait。
+	if ins.exited != nil {
+		select {
+		case <-ins.exited:
+			// 子进程在 8 秒内退出
 			log.Printf("OpenVPN server %d 进程正常停止 PID: %d\n", ins.serverConfig.ID, ins.cmd.Process.Pid)
-		}
+		case <-time.After(8 * time.Second):
+			// 超时！8 秒还没退出
+			log.Printf("OpenVPN server %d 进程停止超时 强制停止 PID: %d\n", ins.serverConfig.ID, ins.cmd.Process.Pid)
 
-	case <-time.After(8 * time.Second):
-		// 超时！8 秒还没退出
-		log.Printf("OpenVPN server %d 进程停止超时 强制停止 PID: %d\n", ins.serverConfig.ID, ins.cmd.Process.Pid)
-
-		// 尝试强制终止
-		if ins.cmd.Process != nil {
-			err := ins.cmd.Process.Kill()
-			if err != nil {
-				// 忽略 "process already finished"（Go ≥1.20）
-				if !errors.Is(err, os.ErrProcessDone) {
-					log.Printf("OpenVPN server %d 强制进程停止失败 PID: %d %v\n", ins.serverConfig.ID, ins.cmd.Process.Pid, err)
+			// 尝试强制终止
+			if ins.cmd.Process != nil {
+				err := ins.cmd.Process.Kill()
+				if err != nil {
+					// 忽略 "process already finished"（Go ≥1.20）
+					if !errors.Is(err, os.ErrProcessDone) {
+						log.Printf("OpenVPN server %d 强制进程停止失败 PID: %d %v\n", ins.serverConfig.ID, ins.cmd.Process.Pid, err)
+					} else {
+						log.Printf("OpenVPN server %d 强制进程停止成功 PID: %d\n", ins.serverConfig.ID, ins.cmd.Process.Pid)
+					}
 				} else {
 					log.Printf("OpenVPN server %d 强制进程停止成功 PID: %d\n", ins.serverConfig.ID, ins.cmd.Process.Pid)
 				}
-			} else {
-				log.Printf("OpenVPN server %d 强制进程停止成功 PID: %d\n", ins.serverConfig.ID, ins.cmd.Process.Pid)
+				// 等待 Wait() 返回（回收资源）
+				<-ins.exited
 			}
-			// 等待 Wait() 返回（回收资源）
-			<-done
 		}
 	}
 	// 执行退出脚本
@@ -290,12 +305,35 @@ func (ins *OpenVPNServerInstance) GetPID() int {
 	return ins.cmd.Process.Pid
 }
 
+// SetKeepAlive 标记面板是否期望该实例进程保持运行。看门狗据此决定异常退出后是否自动拉起。
+func (ins *OpenVPNServerInstance) SetKeepAlive(v bool) {
+	if v {
+		atomic.StoreInt32(&ins.keepAlive, 1)
+	} else {
+		atomic.StoreInt32(&ins.keepAlive, 0)
+	}
+}
+
+// KeepAlive 返回面板是否期望该实例进程保持运行。
+func (ins *OpenVPNServerInstance) KeepAlive() bool {
+	return atomic.LoadInt32(&ins.keepAlive) == 1
+}
+
 func (ins *OpenVPNServerInstance) Running() bool {
 	if ins.cmd == nil {
 		return false
 	}
 	if ins.cmd.Process == nil {
 		return false
+	}
+	// Start 启动的 Wait 协程在进程退出后关闭 exited；僵尸态下 signal 0 仍会成功，
+	// 必须先用该通道判定，才能识别“已退出但未被回收”的情况。
+	if ins.exited != nil {
+		select {
+		case <-ins.exited:
+			return false
+		default:
+		}
 	}
 	// 发送 signal 0：不实际发送信号，仅检查进程是否存在
 	err := ins.cmd.Process.Signal(syscall.Signal(0))

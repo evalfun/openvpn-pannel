@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/gin-contrib/sessions"
-	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
 )
 
@@ -65,7 +64,10 @@ func (a *App) setupStaticFiles() {
 	})
 }
 func (a *App) setupRoutes() {
-	store := cookie.NewStore([]byte(a.cfg.SessionSecret))
+	// 会话数据保存在服务端内存，浏览器 Cookie 中只保存随机会话 ID。
+	// 相比 cookie store（把加密后的整段会话数据放进 Cookie），这样不会把会话内容暴露给客户端，
+	// 也不会因为会话数据增长而撑大请求头。代价是面板进程重启后需要重新登录。
+	store := newMemorySessionStore([]byte(a.cfg.SessionSecret))
 	store.Options(sessions.Options{
 		HttpOnly: true,
 		MaxAge:   36000, // 10 小时
@@ -82,6 +84,7 @@ func (a *App) setupRoutes() {
 		// 用户接口
 		api.POST("/user/login", a.UserLoginHandler)
 		api.POST("/user/logout", a.UserLogoutHandler)
+		api.POST("/user/create/batch", a.AdminLoginWarper(a.BatchCreateUserHandler))
 		api.POST("/user/create", a.AdminLoginWarper(a.CreateUserHandler))
 		api.GET("/user/info", a.UserLoginWarper(a.GetUserInfoHandler))
 		api.POST("/user/info", a.UserLoginWarper(a.UpdateUserInfoHandler))

@@ -28,11 +28,13 @@ client.interceptors.response.use(
   },
   (error) => {
     if (error.response?.status === 401) {
-      // 处理未授权情况
-      localStorage.removeItem('userInfo');
-      // 清除可能存储的 token
-      localStorage.removeItem('userInfo');
-      window.location.href = '/login';
+      const url = error.config?.url || '';
+      const onLoginPage = window.location.pathname === '/login';
+      // 登录接口返回 401（账号密码错误）或已在登录页时，不要跳转，避免刷新页面丢失错误提示
+      if (!url.includes('/user/login') && !onLoginPage) {
+        localStorage.removeItem('userInfo');
+        window.location.href = '/login';
+      }
     }
     return Promise.reject(error);
   }

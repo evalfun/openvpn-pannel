@@ -97,7 +97,25 @@ func (a *App) ListUsersInGroupHandler(c *gin.Context, user *models.User) {
 		})
 		return
 	}
-	userList, err := a.daoManager.ListUsersInGroup(group.ID)
+	// page_size 缺省或 <=0 时返回全部（兼容旧调用），否则分页返回。
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "0"))
+	query := c.DefaultQuery("query", "")
+	if pageSize <= 0 {
+		userList, err := a.daoManager.ListUsersInGroup(group.ID)
+		if err != nil {
+			c.JSON(400, gin.H{"result": "failed",
+				"error": "列出用户组失败 " + err.Error(),
+			})
+			return
+		}
+		c.JSON(200, gin.H{
+			"data":  userList,
+			"count": len(userList),
+		})
+		return
+	}
+	userList, count, err := a.daoManager.ListUsersInGroupPaged(group.ID, query, page, pageSize)
 	if err != nil {
 		c.JSON(400, gin.H{"result": "failed",
 			"error": "列出用户组失败 " + err.Error(),
@@ -105,7 +123,8 @@ func (a *App) ListUsersInGroupHandler(c *gin.Context, user *models.User) {
 		return
 	}
 	c.JSON(200, gin.H{
-		"data": userList,
+		"data":  userList,
+		"count": count,
 	})
 }
 

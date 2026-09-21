@@ -41,6 +41,7 @@ func (a *App) Run() {
 	go a.internalAPIRouter.Run(a.cfg.InternalAPIListen)
 	go a.StartConnectedClientInfoUpdater(60 * time.Second)
 	go a.StartLogRotationTask(60 * time.Second)
+	go a.StartServerKeepAliveTask(60 * time.Second)
 	a.router.Run(a.cfg.Listen)
 }
 
@@ -96,6 +97,48 @@ func (a *App) StartLogRotationTask(interval time.Duration) {
 
 	for range ticker.C {
 		a.rotateAllServerLogs()
+	}
+}
+
+// StartServerKeepAliveTask 周期性检查各服务器的 openvpn 进程是否存活，
+// 对面板期望运行但已异常退出的实例自动重新拉起，避免失联。
+// 存活检测只基于子进程状态（Wait 回收 + signal 0），不连接 management socket，
+// 因此不会向 openvpn 产生额外的管理接口日志。
+func (a *App) StartServerKeepAliveTask(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		a.checkAndRestartServers()
+	}
+}
+
+// checkAndRestartServers 检查并拉起所有面板期望运行但进程已退出的服务器。
+func (a *App) checkAndRestartServers() {
+	a.lock.Lock()
+	defer a.lock.Unlock()
+
+	for serverID, serverInstance := range a.ovpnProcessList {
+		// 只保活“面板期望其运行”的实例；主动停止或不曾启动的实例不处理。
+		if !serverInstance.KeepAlive() {
+			continue
+		}
+		pl := a.getProcessLock(serverID)
+		pl.RLock()
+		alive := serverInstance.Running()
+		pl.RUnlock()
+		if alive {
+			continue
+		}
+		serverModel, err := a.daoManager.GetOpenVPNServerByID(serverID)
+		if err != nil {
+			log.Printf("保活检查: 服务器 %d 已不存在，清理进程列表条目", serverID)
+			delete(a.ovpnProcessList, serverID)
+			a.removeProcessLock(serverID)
+			continue
+		}
+		log.Printf("保活检查: 服务器 %d (%s) 的 openvpn 进程已退出，正在重新拉起", serverID, serverModel.Name)
+		a.startServerLocked(serverModel, "keepalive")
 	}
 }
 

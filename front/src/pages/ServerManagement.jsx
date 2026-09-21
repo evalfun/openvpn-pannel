@@ -2308,6 +2308,46 @@ push "redirect-gateway def1"'
           )}
           {certSelect.loading ? (
             <Box sx={{ display: 'flex', justifyContent: 'center', padding: 3 }}><CircularProgress /></Box>
+          ) : certSelect.certs.length === 0 ? (
+            <Typography color="textSecondary" sx={{ textAlign: 'center', padding: 3 }}>暂无可选证书</Typography>
+          ) : isMobile ? (
+            <Box>
+              {certSelect.certs.map((cert) => (
+                <Card key={cert.id} variant="outlined" sx={{ marginBottom: 1.5 }}>
+                  <CardContent sx={{ padding: 2, '&:last-child': { paddingBottom: 2 } }}>
+                    <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
+                      <Typography variant="subtitle1" sx={{ fontWeight: 'bold', wordBreak: 'break-all' }}>
+                        {cert.name}
+                      </Typography>
+                      <Chip
+                        label={certTypeLabel(cert.type)}
+                        size="small"
+                        color={cert.type === 2 ? 'primary' : 'default'}
+                        sx={{ flexShrink: 0 }}
+                      />
+                    </Stack>
+                    <Typography variant="body2" sx={{ marginTop: 1, wordBreak: 'break-all' }}>
+                      {cert.subject || '-'}
+                    </Typography>
+                    <Typography variant="body2" color="textSecondary" sx={{ marginTop: 0.5 }}>
+                      到期：{cert.not_after ? new Date(cert.not_after * 1000).toLocaleDateString() : '-'}
+                    </Typography>
+                  </CardContent>
+                  <CardActions sx={{ paddingX: 2, paddingTop: 0, paddingBottom: 1.5 }}>
+                    <Button size="small" variant="contained" onClick={() => applyCertSelect(cert)}>选择</Button>
+                  </CardActions>
+                </Card>
+              ))}
+              <Box sx={{ display: 'flex', justifyContent: 'center', marginTop: 2 }}>
+                <Pagination
+                  count={Math.max(1, Math.ceil(certSelect.total / certSelect.pageSize))}
+                  page={certSelect.page}
+                  onChange={(e, value) => openCertSelect(certSelect.target, value)}
+                  color="primary"
+                  size="small"
+                />
+              </Box>
+            </Box>
           ) : (
             <>
               <TableContainer>
@@ -2322,19 +2362,15 @@ push "redirect-gateway def1"'
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {certSelect.certs.length === 0 ? (
-                      <TableRow><TableCell colSpan={5} align="center">暂无可选证书</TableCell></TableRow>
-                    ) : (
-                      certSelect.certs.map((cert) => (
-                        <TableRow key={cert.id} hover>
-                          <TableCell>{cert.name}</TableCell>
-                          <TableCell>{certTypeLabel(cert.type)}</TableCell>
-                          <TableCell sx={{ maxWidth: 240, wordBreak: 'break-all' }}>{cert.subject}</TableCell>
-                          <TableCell>{cert.not_after ? new Date(cert.not_after * 1000).toLocaleDateString() : '-'}</TableCell>
-                          <TableCell><Button size="small" onClick={() => applyCertSelect(cert)}>选择</Button></TableCell>
-                        </TableRow>
-                      ))
-                    )}
+                    {certSelect.certs.map((cert) => (
+                      <TableRow key={cert.id} hover>
+                        <TableCell>{cert.name}</TableCell>
+                        <TableCell>{certTypeLabel(cert.type)}</TableCell>
+                        <TableCell sx={{ maxWidth: 240, wordBreak: 'break-all' }}>{cert.subject}</TableCell>
+                        <TableCell>{cert.not_after ? new Date(cert.not_after * 1000).toLocaleDateString() : '-'}</TableCell>
+                        <TableCell><Button size="small" onClick={() => applyCertSelect(cert)}>选择</Button></TableCell>
+                      </TableRow>
+                    ))}
                   </TableBody>
                 </Table>
               </TableContainer>

@@ -67,6 +67,9 @@ const Groups = () => {
   
   const [selectedGroup, setSelectedGroup] = useState(null);
   const [groupUsers, setGroupUsers] = useState([]);
+  const [groupUsersPage, setGroupUsersPage] = useState(1);
+  const [groupUsersPageSize, setGroupUsersPageSize] = useState(10);
+  const [groupUsersTotal, setGroupUsersTotal] = useState(0);
   const [groupACLs, setGroupACLs] = useState([]);
   const [allUsers, setAllUsers] = useState([]);
   
@@ -122,11 +125,19 @@ const Groups = () => {
     }
   };
 
-  const loadGroupUsers = async (groupName) => {
+  // 加载用户组内的用户（分页）。若当前页超出范围（如删除后页数减少）会自动回退。
+  const loadGroupUsers = async (groupName, p = groupUsersPage, ps = groupUsersPageSize) => {
     try {
-      const response = await groupAPI.getGroupUsers(groupName);
-      if (response.data.data) {
-        setGroupUsers(response.data.data);
+      const response = await groupAPI.getGroupUsers(groupName, p, ps);
+      if (response.data.result === 'success' || response.data.data) {
+        const total = response.data.count || 0;
+        const maxPage = Math.max(1, Math.ceil(total / ps));
+        if (p > maxPage) {
+          return loadGroupUsers(groupName, maxPage, ps);
+        }
+        setGroupUsers(response.data.data || []);
+        setGroupUsersTotal(total);
+        setGroupUsersPage(p);
       }
     } catch (err) {
       setGroupManageError('加载用户组用户失败');
@@ -196,7 +207,8 @@ const Groups = () => {
     setEditDownloadLimitKB(group.download_limit_kb || 0);
     //setTabValue(0);
     setOpenManageDialog(true);
-    await loadGroupUsers(group.name);
+    setGroupUsersPage(1);
+    await loadGroupUsers(group.name, 1, groupUsersPageSize);
     await loadGroupACLs(group.name);
   };
 
@@ -222,7 +234,7 @@ const Groups = () => {
           setGroupManageSuccess('用户添加成功');
           setSelectedUsers([]);
           setOpenAddUserDialog(false);
-          await loadGroupUsers(selectedGroup.name);
+          await loadGroupUsers(selectedGroup.name, groupUsersPage, groupUsersPageSize);
         }
       } catch (batchError) {
         // 如果批量接口不存在，降级为逐个添加
@@ -235,7 +247,7 @@ const Groups = () => {
         setGroupManageSuccess('用户添加成功');
         setSelectedUsers([]);
         setOpenAddUserDialog(false);
-        await loadGroupUsers(selectedGroup.name);
+        await loadGroupUsers(selectedGroup.name, groupUsersPage, groupUsersPageSize);
       }
     } catch (err) {
       setAddUserDialogError(err.response?.data?.error || '添加用户失败');
@@ -253,7 +265,7 @@ const Groups = () => {
       });
       if (response.data.result === 'success') {
         setGroupManageSuccess('用户移除成功');
-        await loadGroupUsers(selectedGroup.name);
+        await loadGroupUsers(selectedGroup.name, groupUsersPage, groupUsersPageSize);
       }
     } catch (err) {
       setGroupManageError(err.response?.data?.error || '移除用户失败');
@@ -710,6 +722,35 @@ const Groups = () => {
                   </TableBody>
                 </Table>
               </TableContainer>
+
+              <Stack direction="row" spacing={2} alignItems="center" sx={{ marginTop: 2, flexWrap: 'wrap', gap: 1 }}>
+                <FormControl sx={{ minWidth: 120 }} size="small">
+                  <InputLabel>每页数量</InputLabel>
+                  <Select
+                    label="每页数量"
+                    value={groupUsersPageSize}
+                    onChange={(e) => {
+                      const size = e.target.value;
+                      setGroupUsersPageSize(size);
+                      setGroupUsersPage(1);
+                      loadGroupUsers(selectedGroup.name, 1, size);
+                    }}
+                  >
+                    <MenuItem value={10}>10</MenuItem>
+                    <MenuItem value={20}>20</MenuItem>
+                    <MenuItem value={50}>50</MenuItem>
+                    <MenuItem value={100}>100</MenuItem>
+                  </Select>
+                </FormControl>
+                <Typography>总共 {groupUsersTotal} 个用户</Typography>
+                <Pagination
+                  count={Math.max(1, Math.ceil(groupUsersTotal / groupUsersPageSize))}
+                  page={groupUsersPage}
+                  onChange={(e, value) => loadGroupUsers(selectedGroup.name, value, groupUsersPageSize)}
+                  color="primary"
+                  size="small"
+                />
+              </Stack>
             </Box>
           )}
 

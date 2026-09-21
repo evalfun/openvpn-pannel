@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Box,
   Typography,
@@ -37,6 +37,8 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 import EditIcon from '@mui/icons-material/Edit';
 import VisibilityIcon from '@mui/icons-material/Visibility';
 import DeleteForeverIcon from '@mui/icons-material/DeleteForever';
+import UploadFileIcon from '@mui/icons-material/UploadFile';
+import DownloadIcon from '@mui/icons-material/Download';
 import { userManageAPI, userServerPermAPI } from '../api';
 
 // 用户限速策略，取值与后端 models.RATE_LIMIT_TYPE_* 一致
@@ -108,7 +110,6 @@ const RateLimitFields = ({ value, onChange }) => (  <Stack spacing={2}>
 const Users = () => {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
-  const initialFetchedRef = useRef(false);
   
   const [users, setUsers] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -120,11 +121,19 @@ const Users = () => {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [totalCount, setTotalCount] = useState(0);
+  // reloadKey 用于在不改变页码（例如在第 1 页搜索/刷新）时强制重新加载列表。
+  const [reloadKey, setReloadKey] = useState(0);
   const [queryString, setQueryString] = useState('');
   const [selectedUserIds, setSelectedUserIds] = useState([]);
   
   const [openDialog, setOpenDialog] = useState(false);
   const [openEditDialog, setOpenEditDialog] = useState(false);
+  const [openBatchDialog, setOpenBatchDialog] = useState(false);
+  const [batchCsv, setBatchCsv] = useState('');
+  const [batchFileName, setBatchFileName] = useState('');
+  const [batchError, setBatchError] = useState('');
+  const [batchResults, setBatchResults] = useState(null);
+  const [batchSubmitLoading, setBatchSubmitLoading] = useState(false);
   const [openDescriptionModal, setOpenDescriptionModal] = useState(false);
   const [selectedDescription, setSelectedDescription] = useState('');
   const [selectedUserNameForDesc, setSelectedUserNameForDesc] = useState('');
@@ -175,11 +184,13 @@ const Users = () => {
     }
   };
 
+  // 触发一次列表重新加载（用于搜索/刷新/增删改后，即使页码未变也能刷新）
+  const reloadUsers = () => setReloadKey((k) => k + 1);
+
   useEffect(() => {
-    if (page === 1 && pageSize === 20 && initialFetchedRef.current) return;
     loadUsers(page, pageSize);
-    if (page === 1 && pageSize === 20) initialFetchedRef.current = true;
-  }, [page, pageSize]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, pageSize, reloadKey]);
 
   const handleCreateUser = async () => {
     if (!formData.username || !formData.password) {
@@ -194,7 +205,7 @@ const Users = () => {
         setFormData({ username: '', password: '', description: '', rate_limit_type: 1, upload_limit_kb: 0, download_limit_kb: 0 });
         setOpenDialog(false);
         setPage(1);
-        loadUsers(1, pageSize);
+        reloadUsers();
       } else {
         setCreateUserError(response.data.error || '创建用户失败');
       }
@@ -202,6 +213,83 @@ const Users = () => {
       setCreateUserError(err.response?.data?.error || '创建用户失败');
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  // ===== 批量添加用户 =====
+  const downloadUserTemplate = () => {
+    // 首行表头：用户名,密码,用户备注,用户组；备注与用户组可留空。
+    const csv = '\ufeff用户名,密码,用户备注,用户组\nzhangsan,password123,张三,vip\nlisi,password456,,\n';
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = '用户批量添加模板.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+  };
+
+  const openBatchAddDialog = () => {
+    setBatchCsv('');
+    setBatchFileName('');
+    setBatchError('');
+    setBatchResults(null);
+    setOpenBatchDialog(true);
+  };
+
+  const closeBatchDialog = () => {
+    setOpenBatchDialog(false);
+    setBatchFileName('');
+  };
+
+  const handleBatchFileChange = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // 允许重复选择同一文件
+    if (!file) return;
+    if (file.size > 1024 * 1024) {
+      setBatchError('CSV 文件不能超过 1 MB');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setBatchCsv(typeof reader.result === 'string' ? reader.result : '');
+      setBatchFileName(file.name);
+      setBatchError('');
+      setBatchResults(null);
+    };
+    reader.onerror = () => setBatchError('读取文件失败');
+    reader.readAsText(file, 'utf-8');
+  };
+
+  const handleBatchSubmit = async () => {
+    if (!batchCsv.trim()) {
+      setBatchError('请先选择或粘贴 CSV 内容');
+      return;
+    }
+    try {
+      setBatchSubmitLoading(true);
+      setBatchError('');
+      const response = await userManageAPI.createUsersBatch(batchCsv);
+      if (response.data.result === 'success') {
+        const items = response.data.data || [];
+        setBatchResults({
+          items,
+          successCount: response.data.success_count || 0,
+          failedCount: response.data.failed_count || 0,
+        });
+        if ((response.data.success_count || 0) > 0) {
+          setPage(1);
+          reloadUsers();
+        }
+      } else {
+        setBatchError(response.data.error || '批量添加失败');
+      }
+    } catch (err) {
+      setBatchError(err.response?.data?.error || '批量添加失败');
+    } finally {
+      setBatchSubmitLoading(false);
     }
   };
 
@@ -235,7 +323,7 @@ const Users = () => {
       if (response.data.result === 'success') {
         setSuccess('用户信息更新成功');
         setOpenEditDialog(false);
-        loadUsers(page, pageSize);
+        reloadUsers();
       } else {
         setEditUserError(response.data.error || '更新失败');
       }
@@ -261,7 +349,7 @@ const Users = () => {
         setSuccess('用户删除成功');
         setSelectedUserIds([]);
         setPage(1);
-        loadUsers(1, pageSize);
+        reloadUsers();
       } else {
         setError(response.data.error || '删除失败');
       }
@@ -281,7 +369,7 @@ const Users = () => {
       const response = await userManageAPI.resetTraffic(user.id);
       if (response.data.result === 'success') {
         setSuccess('流量记录已清除');
-        loadUsers(page, pageSize);
+        reloadUsers();
       } else {
         setError(response.data.error || '清除流量记录失败');
       }
@@ -299,13 +387,13 @@ const Users = () => {
 
   const handleSearch = () => {
     setPage(1);
-    loadUsers(1, pageSize);
+    reloadUsers();
   };
 
   const handleReset = () => {
     setQueryString('');
     setPage(1);
-    loadUsers(1, pageSize);
+    reloadUsers();
   };
 
   const handleSelectUser = useCallback((userId) => {
@@ -635,6 +723,14 @@ const Users = () => {
         >
           创建用户
         </Button>
+        <Button
+          variant="outlined"
+          startIcon={<UploadFileIcon />}
+          onClick={openBatchAddDialog}
+          disabled={isLoading}
+        >
+          批量添加
+        </Button>
         {isLoading && <CircularProgress />}
       </Stack>
 
@@ -820,6 +916,110 @@ const Users = () => {
           <Button onClick={handleCreateUser} variant="contained" disabled={isLoading}>
             创建
           </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* 批量添加用户对话框 */}
+      <Dialog maxWidth={isMobile ? 'lg' : 'md'} open={openBatchDialog} onClose={closeBatchDialog} fullWidth fullScreen={isMobile}>
+        <DialogTitle>批量添加用户</DialogTitle>
+        <DialogContent>
+          {batchError && (
+            <Alert severity="error" sx={{ marginTop: 1 }} onClose={() => setBatchError('')}>
+              {batchError}
+            </Alert>
+          )}
+
+          {!batchResults ? (
+            <>
+              <Alert severity="info" sx={{ marginTop: 1 }}>
+                CSV 首行为表头，需包含「用户名」「密码」列，可选「用户备注」「用户组」列；备注写入用户描述，
+                用户组留空表示不加入任何用户组。可先下载模板按格式填写。
+              </Alert>
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }} sx={{ marginTop: 2, marginBottom: 1, flexWrap: 'wrap' }}>
+                <Button variant="outlined" startIcon={<DownloadIcon />} onClick={downloadUserTemplate}>
+                  下载模板
+                </Button>
+                <Button variant="outlined" component="label" startIcon={<UploadFileIcon />}>
+                  选择 CSV 文件
+                  <input hidden type="file" accept=".csv,text/csv" onChange={handleBatchFileChange} />
+                </Button>
+                {batchFileName && (
+                  <Typography variant="body2" color="textSecondary" sx={{ wordBreak: 'break-all' }}>
+                    已选择：{batchFileName}
+                  </Typography>
+                )}
+              </Stack>
+              <TextField
+                fullWidth
+                multiline
+                rows={8}
+                label="CSV 内容（可粘贴或修改）"
+                value={batchCsv}
+                onChange={(e) => {
+                  setBatchCsv(e.target.value);
+                  setBatchError('');
+                }}
+                placeholder={'用户名,密码,用户备注,用户组\nuser1,password1,张三,groupA\nuser2,password2,,'}
+                sx={{ '& textarea': { fontFamily: 'monospace', fontSize: 12 } }}
+              />
+            </>
+          ) : (
+            <Box sx={{ marginTop: 1 }}>
+              <Alert severity={batchResults.failedCount > 0 ? 'warning' : 'success'}>
+                成功 {batchResults.successCount} 个，失败 {batchResults.failedCount} 个
+                {batchResults.failedCount > 0 ? '，失败详情见下表' : ''}
+              </Alert>
+              <TableContainer sx={{ marginTop: 1, maxHeight: 360 }}>
+                <Table size="small" stickyHeader>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>行号</TableCell>
+                      <TableCell>用户名</TableCell>
+                      <TableCell>用户备注</TableCell>
+                      <TableCell>用户组</TableCell>
+                      <TableCell>结果</TableCell>
+                      <TableCell>原因</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {batchResults.items.map((item, idx) => (
+                      <TableRow key={`${item.line}-${idx}`}>
+                        <TableCell>{item.line}</TableCell>
+                        <TableCell sx={{ wordBreak: 'break-all' }}>{item.username || '-'}</TableCell>
+                        <TableCell sx={{ wordBreak: 'break-all' }}>{item.description || '-'}</TableCell>
+                        <TableCell sx={{ wordBreak: 'break-all' }}>{item.group_name || '-'}</TableCell>
+                        <TableCell>
+                          {item.success ? (
+                            <Chip size="small" color="success" label="成功" />
+                          ) : (
+                            <Chip size="small" color="error" label="失败" />
+                          )}
+                        </TableCell>
+                        <TableCell sx={{ color: item.success ? 'text.secondary' : 'error.main', wordBreak: 'break-all' }}>
+                          {item.success ? '-' : item.error || '未知原因'}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          {batchResults ? (
+            <>
+              <Button onClick={() => { setBatchResults(null); setBatchCsv(''); setBatchFileName(''); }}>继续添加</Button>
+              <Button variant="contained" onClick={closeBatchDialog}>完成</Button>
+            </>
+          ) : (
+            <>
+              <Button onClick={closeBatchDialog}>取消</Button>
+              <Button variant="contained" onClick={handleBatchSubmit} disabled={batchSubmitLoading || !batchCsv.trim()}>
+                {batchSubmitLoading ? <CircularProgress size={20} /> : '批量添加'}
+              </Button>
+            </>
+          )}
         </DialogActions>
       </Dialog>
 

@@ -42,6 +42,65 @@ func (um *DaoManager) CreateUser(username, password, description string, rateLim
 	return um.DB.Model(&models.User{}).Create(record).Error
 }
 
+// CreateUserWithGroup 创建一个用户，并在 groupName 非空时将其加入同名用户组。
+// groupName 为空表示不加入任何用户组。用户名已存在或用户组不存在时返回可读错误，
+// 用户创建与加入用户组在同一事务内完成，避免出现“建了用户却没进组”的中间状态。
+func (um *DaoManager) CreateUserWithGroup(username, password, description, groupName string) error {
+	if _, err := um.GetUserByUsername(username); err == nil {
+		return fmt.Errorf("用户名已存在")
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+
+	var group *models.Group
+	if groupName != "" {
+		g, err := um.GetGroupByName(groupName)
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return fmt.Errorf("用户组「%s」不存在", groupName)
+			}
+			return fmt.Errorf("查询用户组失败: %s", err.Error())
+		}
+		group = g
+	}
+
+	hash := sha256.Sum256([]byte(password + um.cfg.PasswordSalt))
+	hashedPasswd := fmt.Sprintf("%x", hash)
+
+	tx := um.DB.Begin()
+	if tx.Error != nil {
+		return fmt.Errorf("开启事务失败: %s", tx.Error.Error())
+	}
+	record := map[string]interface{}{
+		"username":          username,
+		"password":          hashedPasswd,
+		"description":       description,
+		"rate_limit_type":   models.RATE_LIMIT_TYPE_ACTIVE_GROUP_MIN,
+		"upload_limit_kb":   0,
+		"download_limit_kb": 0,
+	}
+	if err := tx.Model(&models.User{}).Create(record).Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("创建用户失败: %s", err.Error())
+	}
+	if group != nil {
+		var created models.User
+		if err := tx.Where("username = ?", username).First(&created).Error; err != nil {
+			tx.Rollback()
+			return fmt.Errorf("创建用户失败: %s", err.Error())
+		}
+		if err := tx.Create(&models.UserGroup{UserID: created.ID, GroupID: group.ID}).Error; err != nil {
+			tx.Rollback()
+			return fmt.Errorf("加入用户组「%s」失败: %s", groupName, err.Error())
+		}
+	}
+	if err := tx.Commit().Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("提交事务失败: %s", err.Error())
+	}
+	return nil
+}
+
 func (um *DaoManager) AuthUser(username, password string) (*models.User, error) {
 	var user models.User
 	err := um.DB.Where("username = ?", username).First(&user).Error
