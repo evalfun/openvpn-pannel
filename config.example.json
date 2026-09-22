@@ -10,6 +10,7 @@
   "working_dir": "/ABSOLUTE/PATH/TO/openvpn-pannel/workdir",
   "app_cmd": "/ABSOLUTE/PATH/TO/openvpn-pannel/openvpn-pannel -config /ABSOLUTE/PATH/TO/openvpn-pannel/config.json",
   "internal_api_listen": "127.0.0.1:59003",
+  "client_page_listen": "0.0.0.0:8088",
   "max_log_size_kb": 20480,
   "allow_edit_resource": false
 }

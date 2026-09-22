@@ -73,6 +73,7 @@
 | `session_secret` | 会话密钥，建议 32 字符随机串 |
 | `working_dir` | 工作目录绝对路径 |
 | `internal_api_listen` | 内部 API 地址，建议 `127.0.0.1:59003` |
+| `client_page_listen` | 客户端自助页面监听地址（如 `10.8.0.1:8088`），为空则不启用 |
 | `max_log_size_kb` | 单实例日志容量上限（KB），`<=0` 关闭轮换 |
 | `allow_edit_resource` | 是否允许在线编辑脚本资源，**默认 false** |
 
@@ -84,10 +85,21 @@
   "session_secret": "CHANGE_ME_32_byte_random_secret",
   "working_dir": "/opt/openvpn-pannel/workdir",
   "internal_api_listen": "127.0.0.1:59003",
+  "client_page_listen": "10.8.0.1:8088",
   "max_log_size_kb": 20480,
   "allow_edit_resource": false
 }
 ```
+
+## 客户端自助页面与 MFA（TOTP）
+
+- 在 `config.json` 配置 `client_page_listen`（如 `10.8.0.1:8088`）后，面板会在该地址额外监听一个
+  只读页面，仅面向已连接的 VPN 客户端（按 HTTP 来源 IP 识别，非 VPN 客户端访问返回错误）。
+  页面展示：服务器名称、用户名称、证书名称、公网/内网 IP、可访问网络、已用流量、当前限速。
+- 在“用户管理 → 编辑”中可为用户启用 **TOTP（MFA）**，保存后显示密钥与 `otpauth://` 链接供绑定。
+- 启用后：VPN 认证通过但不下发任何 ACL；用户在自助页面输入 6 位动态验证码通过后才放行网络，
+  登出时回收。无头设备可用 `curl http://<页面地址>/login/<6位验证码>` 与 `curl http://<页面地址>/logout`。
+- 面板登录同样受 TOTP 保护：登录页在需要时会弹框要求补充动态验证码。
 
 ## 权限与访问控制
 
@@ -124,14 +136,15 @@
 
 ## nftables 脚本（可选，需自行替换）
 
-默认资源脚本基于 `iptables` / `ipset`。仓库 `nftables-script/` 目录额外提供了一套纯
+默认资源脚本基于 `iptables` / `ipset`。仓库 `nftables-scripts/` 目录额外提供了一套纯
 `nftables` 实现，**不会内嵌进二进制，也不会自动生效**，仅供需要 nftables 的用户自行替换：
 
-- `nftables-script/generic/`：普通 Linux（脚本内使用 `sudo`），对应二进制内嵌的默认资源；
-- `nftables-script/openwrt/`：OpenWrt / ImmortalWrt（不使用 `sudo`、使用绝对路径），对应 `doc-openwrt/`。
+- `nftables-scripts/generic/`：普通 Linux（脚本内使用 `sudo`），对应二进制内嵌的默认资源；
+- `nftables-scripts/openwrt/`：OpenWrt / ImmortalWrt（不使用 `sudo`、使用绝对路径），对应 `doc-openwrt/`。
 
 替换方式：在面板「资源文件」中，把 `client_online.sh`、`client_offline.sh`、
 `server_start.sh`、`server_exit.sh` 分别替换为对应目录下的同名文件后重启服务。
+启用 TOTP（MFA）时，还需把 `acl_add.sh`、`acl_del.sh` 替换为对应目录下的同名文件。
 `ratelimit.sh`、`misc`、`auth.sh` 等不涉及防火墙，保持原样即可。
 
 > nftables 版本为每台服务器创建独立 `inet` 表 `openvpn_acl_<服务器ID>`，基础链

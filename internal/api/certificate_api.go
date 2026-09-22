@@ -174,8 +174,8 @@ func formatFingerprint(rawHex string) string {
 }
 
 // logCertificateEvent 记录证书操作审计事件（certificate_events 表），事件内容包含证书 CN 与 SHA-256 指纹。
-// server 非空时表示该事件与某服务器相关（如服务器引用证书）。
-func (a *App) logCertificateEvent(c *gin.Context, eventType int, action string, cert *models.Certificate, server *models.Server) {
+// server 非空时表示该事件与某服务器相关（如服务器引用证书）；operator 为执行操作的面板用户。
+func (a *App) logCertificateEvent(c *gin.Context, operator *models.User, eventType int, action string, cert *models.Certificate, server *models.Server) {
 	cn := ""
 	if parsed, err := certutil.ParseCertificate(cert.Cert); err == nil {
 		cn = parsed.Subject.CommonName
@@ -191,6 +191,11 @@ func (a *App) logCertificateEvent(c *gin.Context, eventType int, action string, 
 		EventData:  fmt.Sprintf("操作=%s 证书名称=%s CN=%s 指纹=%s", action, cert.Name, cn, fp),
 		CertID:     cert.ID,
 		CertName:   cert.Name,
+	}
+	if operator != nil {
+		event.OperatorUserID = operator.ID
+		event.OperatorUsername = operator.Username
+		event.EventData += fmt.Sprintf(" 操作人=%s", operator.Username)
 	}
 	if server != nil {
 		event.ServerID = server.ID
@@ -286,7 +291,7 @@ func certDownloadFileName(cert *models.Certificate, ext string) string {
 }
 
 // downloadCertFile 输出证书或私钥文件下载。
-func (a *App) downloadCertFile(c *gin.Context, wantKey bool) {
+func (a *App) downloadCertFile(c *gin.Context, user *models.User, wantKey bool) {
 	id, err := strconv.ParseUint(c.DefaultQuery("id", ""), 10, 32)
 	if err != nil {
 		c.JSON(400, gin.H{"result": "failed", "error": "参数 id 必须是 int 类型"})
@@ -312,19 +317,19 @@ func (a *App) downloadCertFile(c *gin.Context, wantKey bool) {
 		content = cert.Key
 	}
 	fileName := certDownloadFileName(cert, ext)
-	a.logCertificateEvent(c, eventType, action, cert, nil)
+	a.logCertificateEvent(c, user, eventType, action, cert, nil)
 	c.Header("Content-Disposition", "attachment; filename=\""+fileName+"\"")
 	c.Data(200, "application/x-pem-file", []byte(content))
 }
 
 // DownloadCertificateHandler 下载证书 PEM。
 func (a *App) DownloadCertificateHandler(c *gin.Context, user *models.User) {
-	a.downloadCertFile(c, false)
+	a.downloadCertFile(c, user, false)
 }
 
 // DownloadCertificateKeyHandler 下载私钥 PEM。
 func (a *App) DownloadCertificateKeyHandler(c *gin.Context, user *models.User) {
-	a.downloadCertFile(c, true)
+	a.downloadCertFile(c, user, true)
 }
 
 // ParseCertificateHandler 解析一段 PEM 证书（不保存），用于前端展示“手动填写”证书的信息。
@@ -424,7 +429,7 @@ func (a *App) GenerateCAHandler(c *gin.Context, user *models.User) {
 		c.JSON(500, gin.H{"result": "failed", "error": err.Error()})
 		return
 	}
-	a.logCertificateEvent(c, models.CERT_EVENT_TYPE_CREATE, "生成CA", cert, nil)
+	a.logCertificateEvent(c, user, models.CERT_EVENT_TYPE_CREATE, "生成CA", cert, nil)
 	c.JSON(200, gin.H{"result": "success", "error": nil, "data": toCertListItem(cert)})
 }
 
@@ -491,7 +496,7 @@ func (a *App) SignCertificateHandler(c *gin.Context, user *models.User) {
 		c.JSON(500, gin.H{"result": "failed", "error": err.Error()})
 		return
 	}
-	a.logCertificateEvent(c, models.CERT_EVENT_TYPE_SIGN, "签发证书", cert, nil)
+	a.logCertificateEvent(c, user, models.CERT_EVENT_TYPE_SIGN, "签发证书", cert, nil)
 	c.JSON(200, gin.H{"result": "success", "error": nil, "data": toCertListItem(cert)})
 }
 
@@ -577,7 +582,7 @@ func (a *App) ImportCertificateHandler(c *gin.Context, user *models.User) {
 		c.JSON(500, gin.H{"result": "failed", "error": err.Error()})
 		return
 	}
-	a.logCertificateEvent(c, models.CERT_EVENT_TYPE_IMPORT, "导入证书", cert, nil)
+	a.logCertificateEvent(c, user, models.CERT_EVENT_TYPE_IMPORT, "导入证书", cert, nil)
 	c.JSON(200, gin.H{"result": "success", "error": nil, "data": toCertListItem(cert)})
 }
 
@@ -646,13 +651,13 @@ func (a *App) DeleteCertificateHandler(c *gin.Context, user *models.User) {
 			c.JSON(500, gin.H{"result": "failed", "error": err.Error()})
 			return
 		}
-		a.logCertificateEvent(c, models.CERT_EVENT_TYPE_DELETE, "删除证书(随CA级联)", child, nil)
+		a.logCertificateEvent(c, user, models.CERT_EVENT_TYPE_DELETE, "删除证书(随CA级联)", child, nil)
 	}
 	if err := a.daoManager.DeleteCertificate(cert.ID); err != nil {
 		c.JSON(500, gin.H{"result": "failed", "error": err.Error()})
 		return
 	}
-	a.logCertificateEvent(c, models.CERT_EVENT_TYPE_DELETE, "删除证书", cert, nil)
+	a.logCertificateEvent(c, user, models.CERT_EVENT_TYPE_DELETE, "删除证书", cert, nil)
 	c.JSON(200, gin.H{"result": "success", "error": nil})
 }
 

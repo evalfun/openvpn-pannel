@@ -37,6 +37,8 @@ const (
 	RESOURCE_ID_SERVER_EXIT_SCRIPT    = "server_exit.sh"
 	RESOURCE_ID_CLIENT_ONLINE_SCRIPT  = "client_online.sh"
 	RESOURCE_ID_RATE_LIMIT_SCRIPT     = "ratelimit.sh"
+	RESOURCE_ID_ACL_ADD_SCRIPT        = "acl_add.sh"
+	RESOURCE_ID_ACL_DEL_SCRIPT        = "acl_del.sh"
 	RESOURCE_ID_MISC_CONFIG           = "misc"
 	RESOURCE_ID_HELP_INFO             = "help"
 	RESOURCE_ID_CLIENT_CONFIG         = "client-config"

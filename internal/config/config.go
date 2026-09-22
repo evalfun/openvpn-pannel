@@ -17,6 +17,9 @@ type Config struct {
 	SessionSecret     string `json:"session_secret"`
 	WorkingDir        string `json:"working_dir"`
 	InternalAPIListen string `json:"internal_api_listen"`
+	// ClientPageListen 面向已连接 VPN 客户端的自助页面监听地址（如 "10.0.1.1:8088"）。
+	// 为空表示不启用该页面。页面依据 HTTP 来源 IP 识别客户端，非 VPN 客户端访问会返回错误。
+	ClientPageListen string `json:"client_page_listen"`
 	// MaxLogSizeKB 单个服务器日志(openvpn.log/auth.log 及其归档)的容量上限，单位 KB。
 	// 达到该值时定时任务会轮换并删除最早归档，回收至该上限的 80%。<=0 关闭日志轮换。
 	MaxLogSizeKB int64 `json:"max_log_size_kb"`

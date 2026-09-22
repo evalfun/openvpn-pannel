@@ -2,7 +2,9 @@ package api
 
 import (
 	"openvpn-pannel/internal/models"
+	"openvpn-pannel/internal/totp"
 	"strconv"
+	"time"
 
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
@@ -19,6 +21,7 @@ type UserListItem struct {
 	RateLimitType            uint   `json:"rate_limit_type"`
 	UploadLimitKB            uint64 `json:"upload_limit_kb"`
 	DownloadLimitKB          uint64 `json:"download_limit_kb"`
+	MFAType                  uint   `json:"mfa_type"`
 }
 
 // 校验用户限速策略参数
@@ -26,11 +29,23 @@ func validateRateLimit(rateLimitType uint) bool {
 	return rateLimitType <= uint(models.RATE_LIMIT_TYPE_FIXED)
 }
 
+// verifyUserMFA 按用户启用的 MFA 类型校验验证码。当前仅支持 TOTP，未来可扩展手机号/邮箱等。
+func verifyUserMFA(user *models.User, code string) bool {
+	switch user.MFAType {
+	case models.MFA_TYPE_TOTP:
+		return totp.Validate(user.MFAData, code, time.Now())
+	default:
+		return false
+	}
+}
+
 // 用户登录接口
 func (a *App) UserLoginHandler(c *gin.Context) {
 	type Param struct {
 		Username string `json:"username" binding:"required,max=50"`
 		Password string `json:"password" binding:"required,max=100"`
+		// MFACode 为多因素认证验证码，仅在用户启用了 MFA 时需要。
+		MFACode string `json:"mfa_code"`
 	}
 	var param Param
 	err := c.ShouldBindJSON(&param)
@@ -48,6 +63,25 @@ func (a *App) UserLoginHandler(c *gin.Context) {
 			"error":  "authentication failed",
 		})
 		return
+	}
+	// 启用 MFA 的用户：密码校验通过后还需动态验证码。
+	// 未提供验证码时返回 result=mfa_required（HTTP 200，避免前端误判为登录失败），
+	// 前端据此弹出验证码输入框后再连同验证码一起提交。
+	if user.MFAType != models.MFA_TYPE_NONE {
+		if param.MFACode == "" {
+			c.JSON(200, gin.H{
+				"result": "mfa_required",
+				"error":  nil,
+			})
+			return
+		}
+		if !verifyUserMFA(user, param.MFACode) {
+			c.JSON(401, gin.H{
+				"result": "failed",
+				"error":  "mfa_invalid",
+			})
+			return
+		}
 	}
 	session := sessions.Default(c)
 	session.Set("user_id", user.ID)
@@ -154,6 +188,11 @@ func (a *App) UpdateUserInfoHandler(c *gin.Context, user *models.User) {
 		RateLimitType   uint   `json:"rate_limit_type"`
 		UploadLimitKB   uint64 `json:"upload_limit_kb"`
 		DownloadLimitKB uint64 `json:"download_limit_kb"`
+		// MFAType 为 nil 表示不修改 MFA 设置；0 关闭并清空数据，非 0 启用对应类型
+		// （当前仅支持 1=TOTP，启用时若无数据则自动生成）。
+		MFAType *uint `json:"mfa_type"`
+		// MFARegenerate 在启用 MFA 时强制重新生成认证数据（用于泄露或换绑）。
+		MFARegenerate bool `json:"mfa_regenerate"`
 	}
 	var param Param
 	err := c.ShouldBindJSON(&param)
@@ -197,18 +236,18 @@ func (a *App) UpdateUserInfoHandler(c *gin.Context, user *models.User) {
 		}
 	}
 	// 非管理员修改自己的资料时，不允许改动限速策略，沿用原值
+	targetUser, err := a.daoManager.GetUserByID(targetUserID)
+	if err != nil {
+		c.JSON(500, gin.H{
+			"result": "failed",
+			"error":  err.Error(),
+		})
+		return
+	}
 	if !isAdmin {
-		currentUser, err := a.daoManager.GetUserByID(targetUserID)
-		if err != nil {
-			c.JSON(500, gin.H{
-				"result": "failed",
-				"error":  err.Error(),
-			})
-			return
-		}
-		param.RateLimitType = currentUser.RateLimitType
-		param.UploadLimitKB = currentUser.UploadLimitKB
-		param.DownloadLimitKB = currentUser.DownloadLimitKB
+		param.RateLimitType = targetUser.RateLimitType
+		param.UploadLimitKB = targetUser.UploadLimitKB
+		param.DownloadLimitKB = targetUser.DownloadLimitKB
 	}
 	err = a.daoManager.UpdateUserInfo(targetUserID, param.Description, param.Password,
 		param.RateLimitType, param.UploadLimitKB, param.DownloadLimitKB)
@@ -219,10 +258,54 @@ func (a *App) UpdateUserInfoHandler(c *gin.Context, user *models.User) {
 		})
 		return
 	}
-	c.JSON(200, gin.H{
+	// MFA 设置变更：启用时若无认证数据（或要求重置）则生成新数据并返回，供前端展示给用户绑定。
+	resp := gin.H{
 		"result": "success",
 		"error":  nil,
-	})
+	}
+	if param.MFAType != nil {
+		mfaType := *param.MFAType
+		switch mfaType {
+		case models.MFA_TYPE_NONE:
+			if err := a.daoManager.SetUserMFA(targetUserID, models.MFA_TYPE_NONE, ""); err != nil {
+				c.JSON(500, gin.H{"result": "failed", "error": err.Error()})
+				return
+			}
+			resp["mfa_type"] = models.MFA_TYPE_NONE
+		case models.MFA_TYPE_TOTP:
+			data := ""
+			// 已启用 TOTP 且未要求重置时沿用原密钥
+			if targetUser.MFAType == models.MFA_TYPE_TOTP {
+				data = targetUser.MFAData
+			}
+			if data == "" || param.MFARegenerate {
+				generated, genErr := totp.GenerateSecret()
+				if genErr != nil {
+					c.JSON(500, gin.H{"result": "failed", "error": "生成 TOTP 密钥失败: " + genErr.Error()})
+					return
+				}
+				data = generated
+			}
+			if err := a.daoManager.SetUserMFA(targetUserID, models.MFA_TYPE_TOTP, data); err != nil {
+				c.JSON(500, gin.H{"result": "failed", "error": err.Error()})
+				return
+			}
+			resp["mfa_type"] = models.MFA_TYPE_TOTP
+			if data != "" {
+				uri := totp.ProvisioningURI("OpenVPN管理", targetUser.Username, data)
+				resp["mfa_data"] = data
+				resp["mfa_uri"] = uri
+				// 同时返回二维码 data URI，前端可直接展示扫码绑定。
+				if qr, qrErr := totp.QRDataURI(uri); qrErr == nil {
+					resp["mfa_qr"] = qr
+				}
+			}
+		default:
+			c.JSON(400, gin.H{"result": "failed", "error": "不支持的 mfa_type，当前仅支持 0(关闭)/1(TOTP)"})
+			return
+		}
+	}
+	c.JSON(200, resp)
 }
 
 // 获取用户信息接口
@@ -278,6 +361,7 @@ func (a *App) GetUserInfoHandler(c *gin.Context, user *models.User) {
 		"rate_limit_type":   user_queryed.RateLimitType,
 		"upload_limit_kb":   user_queryed.UploadLimitKB,
 		"download_limit_kb": user_queryed.DownloadLimitKB,
+		"mfa_type":          user_queryed.MFAType,
 		"result":            "success",
 	})
 }
@@ -352,6 +436,7 @@ func (a *App) ListUserHandler(c *gin.Context, user *models.User) {
 			RateLimitType:            u.RateLimitType,
 			UploadLimitKB:            u.UploadLimitKB,
 			DownloadLimitKB:          u.DownloadLimitKB,
+			MFAType:                  u.MFAType,
 		})
 	}
 

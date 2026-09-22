@@ -43,6 +43,7 @@ const CERT_EVENT_TYPE_MAP = {
   6: { label: '下载私钥', color: 'warning' },
   7: { label: '服务器引用', color: 'primary' },
   8: { label: '客户端引用证书', color: 'primary' },
+  9: { label: '清空事件', color: 'warning' },
 };
 
 const formatTime = (unix) => {
@@ -119,6 +120,14 @@ const CertificateEvents = () => {
             </Typography>
           </Stack>
           <Stack spacing={0.5}>
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
+              <Typography variant="body2" color="textSecondary" sx={{ flexShrink: 0 }}>
+                操作人:
+              </Typography>
+              <Typography variant="body2" sx={{ textAlign: 'right', wordBreak: 'break-all' }}>
+                {event.operator_username || '-'}
+              </Typography>
+            </Box>
             <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
               <Typography variant="body2" color="textSecondary" sx={{ flexShrink: 0 }}>
                 证书:
@@ -244,6 +253,7 @@ const CertificateEvents = () => {
                 <TableRow sx={{ backgroundColor: '#f5f5f5' }}>
                   <TableCell sx={{ fontWeight: 'bold' }}>时间</TableCell>
                   <TableCell sx={{ fontWeight: 'bold' }}>类型</TableCell>
+                  <TableCell sx={{ fontWeight: 'bold' }}>操作人</TableCell>
                   <TableCell sx={{ fontWeight: 'bold' }}>证书</TableCell>
                   <TableCell sx={{ fontWeight: 'bold' }}>对端地址</TableCell>
                   <TableCell sx={{ fontWeight: 'bold' }}>事件数据</TableCell>
@@ -252,7 +262,7 @@ const CertificateEvents = () => {
               <TableBody>
                 {list.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={6} align="center" sx={{ padding: 3 }}>
+                    <TableCell colSpan={7} align="center" sx={{ padding: 3 }}>
                       暂无证书事件
                     </TableCell>
                   </TableRow>
@@ -265,6 +275,7 @@ const CertificateEvents = () => {
                         <TableCell>
                           <Chip label={info.label} size="small" color={info.color} variant="outlined" />
                         </TableCell>
+                        <TableCell>{event.operator_username || '-'}</TableCell>
                         <TableCell>{event.cert_name || '-'}</TableCell>
                         <TableCell>{event.real_ip_addr || '-'}</TableCell>
                         <TableCell sx={{ wordBreak: 'break-all', fontFamily: 'monospace', fontSize: 12 }}>

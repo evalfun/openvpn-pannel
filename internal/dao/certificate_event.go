@@ -31,7 +31,7 @@ func (um *DaoManager) GetCertificateEventList(eventTypeList []int, query string,
 		}
 		if query != "" {
 			like := "%" + query + "%"
-			db = db.Where("(real_ip_addr like ? or event_data like ? or cert_name like ? or server_name like ?)", like, like, like, like)
+			db = db.Where("(real_ip_addr like ? or event_data like ? or cert_name like ? or server_name like ? or operator_username like ?)", like, like, like, like, like)
 		}
 		if startTime != 0 && endTime != 0 {
 			db = db.Where("event_time >= ? and event_time <= ?", startTime, endTime)

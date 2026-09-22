@@ -4,8 +4,8 @@ export const userAPI = {
   // 获取用户信息
   getUserInfo: () => client.get('/user/info'),
   
-  // 登录
-  login: (username, password) => client.post('/user/login', { username, password }),
+  // 登录（mfaCode 仅在启用 MFA 的用户二次验证时传入）
+  login: (username, password, mfaCode = '') => client.post('/user/login', { username, password, mfa_code: mfaCode }),
 
   // 登出
   logout: () => client.post('/user/logout'),
@@ -135,6 +135,9 @@ export const groupAPI = {
   
   // 从用户组移除用户
   removeUserFromGroup: (data) => client.post('/group/user/remove', data),
+
+  // 批量从用户组移除用户
+  removeUsersFromGroup: (data) => client.post('/group/user/remove/batch', data),
   
   // 获取用户组的ACL列表
   getGroupACLs: (group) => client.get(`/group/acl/list?group=${group}`),

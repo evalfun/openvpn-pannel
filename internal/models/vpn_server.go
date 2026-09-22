@@ -75,6 +75,16 @@ const (
 
 	SERVER_EVENT_TYPE_ADD_ACL = 9
 	SERVER_EVENT_TYPE_DEL_ACL = 10
+
+	// 启用二次认证（TOTP/MFA）的客户端专用事件：
+	// 一次认证=用户名密码通过；二次认证=TOTP 验证通过；下线分别对应该会话的结束。
+	SERVER_EVENT_TYPE_FIRST_AUTH_SUCCESS  = 11
+	SERVER_EVENT_TYPE_SECOND_AUTH_SUCCESS = 12
+	SERVER_EVENT_TYPE_SECOND_AUTH_LOGOUT  = 13
+	SERVER_EVENT_TYPE_FIRST_AUTH_LOGOUT   = 14
+
+	// SERVER_EVENT_TYPE_SERVER_RECOVERED 服务器异常退出后由看门狗自动拉起并恢复运行。
+	SERVER_EVENT_TYPE_SERVER_RECOVERED = 15
 )
 
 type ServerEvent struct {
@@ -103,4 +113,11 @@ type ConnectedClientInfoRecord struct {
 	// 达量限速运行时据此判断生效限速是否变化，只对变化的客户端重新设置 tc。
 	UploadLimitKB   uint64 `gorm:"not null;default:0" json:"upload_limit_kb"`
 	DownloadLimitKB uint64 `gorm:"not null;default:0" json:"download_limit_kb"`
+	// ClientCertName 会话使用的客户端证书名称（OpenVPN common_name）。
+	ClientCertName string `gorm:"not null;default:''" json:"client_cert_name"`
+	// RealIPAddr 客户端的公网地址（untrusted_ip:untrusted_port）。
+	RealIPAddr string `gorm:"not null;default:''" json:"real_ip_addr"`
+	// MFAVerified 该会话是否已通过多因素认证（仅对启用 MFA 的用户有意义）。
+	// 验证通过后才会下发 ACL；下线/登出后随记录一起清除。
+	MFAVerified bool `gorm:"not null;default:false" json:"mfa_verified"`
 }

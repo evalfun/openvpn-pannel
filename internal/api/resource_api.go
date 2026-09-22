@@ -120,6 +120,14 @@ func (a *App) ListResourceHandler(c *gin.Context, user *models.User) {
 				Description: "达量限速运行时更新脚本内容",
 			},
 			{
+				ID:          ovpnserver.RESOURCE_ID_ACL_ADD_SCRIPT,
+				Description: "TOTP 验证通过后动态放行用户 ACL 的脚本内容",
+			},
+			{
+				ID:          ovpnserver.RESOURCE_ID_ACL_DEL_SCRIPT,
+				Description: "登出后动态回收用户 ACL 的脚本内容",
+			},
+			{
 				ID:          ovpnserver.RESOURCE_ID_CONFIG_TEMPLATE,
 				Description: "服务器配置模板内容",
 			},

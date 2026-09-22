@@ -17,12 +17,13 @@
   | `tc` | 带宽限速 | 记录日志并自动跳过限速 |
   | `iptables` | 下发 ACL 规则 | 无法放行 |
   | `flock` | 上下线脚本串行化 | 并发时可能相互覆盖规则 |
+  | `conntrack` | 登出时清空该客户端的连接跟踪（状态表） | 记录日志并跳过，已建立的连接会继续放行到超时 |
 
 安装依赖：
 
 ```sh
 opkg update
-opkg install bash ipset tc iptables flock
+opkg install bash ipset tc iptables flock conntrack
 ```
 
 > 旧版 **fw3 + iptables 未经测试**，行为可能与本文不同。
@@ -47,6 +48,8 @@ opkg install bash ipset tc iptables flock
 - `sqlite_db`: SQLite 数据库路径
 - `working_dir`: 运行时目录
 - `internal_api_listen`: `127.0.0.1:59003`（内部 API，供脚本调用）
+- `client_page_listen`: `0.0.0.0:8088`（客户端自助服务和MFA二次认证登录页面）
+
 
 ---
 
@@ -98,6 +101,8 @@ chmod +x /etc/init.d/openvpn-pannel
 | --- | --- | --- |
 | 客户端上线脚本 | `client_online.sh` | 上线时放行 ACL（ipset）+ 设置下载限速 |
 | 客户端下线脚本 | `client_offline.sh` | 下线时回收 ACL 与限速 |
+| TOTP 放行脚本 | `acl_add.sh` | 二次认证通过后动态放行 ACL（仅启用 MFA 时用到） |
+| TOTP 回收脚本 | `acl_del.sh` | 登出时动态回收 ACL（仅启用 MFA 时用到） |
 | 达量限速更新脚本 | `ratelimit.sh` | 达量限速命中或解除时，对变化的客户端重设/移除 tc 限速 |
 | 服务端启动脚本 | `server_start.sh` | 初始化 ACL 链 / ipset |
 | 服务端退出脚本 | `server_exit.sh` | 回收 ACL 链 / ipset |
@@ -110,12 +115,13 @@ chmod +x /etc/init.d/openvpn-pannel
 > - 资源文件中形如 `__INTERNAL_API__`、`__WORKING_DIR__`、`__SERVER_ID__`、`__SERVER_INTERFACE__` 的占位符，由面板在保存/下发时自动填充，**请勿手动修改**。
 > - OpenWrt 版资源与通用版的主要差别：直接调用 `/usr/sbin/iptables`（或 `/sbin/tc`）等绝对路径、不依赖 `sudo`、用 `/sys/class/net/<iface>` 判断接口是否存在、`openvpn_path=/usr/sbin/openvpn`、`shell_path=/bin/bash`，且 tc 限速与 ACL 操作放入 `flock` 临界区串行化。
 
-> **可选的 nftables 版本（自行替换）**：本仓库 `nftables-script/openwrt/` 目录提供了把上述
+> **可选的 nftables 版本（自行替换）**：本仓库 `nftables-scripts/openwrt/` 目录提供了把上述
 > 防火墙脚本从 `iptables` / `ipset` 换成纯 `nftables` 的版本，**面板不会自动使用，需你手动替换**。
 > 在面板「资源文件」中把 `client_online.sh`、`client_offline.sh`、`server_start.sh`、
-> `server_exit.sh` 四个文件替换为该目录下的同名文件并重启服务即可，`misc`、`ratelimit.sh`
-> 等其余资源保持原样。普通 Linux 请使用 `nftables-script/generic/`。
->
+> `server_exit.sh` 四个文件替换为该目录下的同名文件；若启用 TOTP（MFA），再把
+> `acl_add.sh`、`acl_del.sh` 也替换为该目录下的同名文件，然后重启服务即可，
+> `misc`、`ratelimit.sh` 等其余资源保持原样。普通 Linux 请使用 `nftables-scripts/generic/`。  
+> 要替换就全部替换，不能只替换部分脚本，不然会产生预期之外的问题  
 > 使用 nftables 版本时，请把 3.5 中 `openvpn` 区域的**转发（Forward）策略设为允许**：
 > 面板会在 fw4 之前（`priority -200`）用自身规则直接 `drop` 未放行的流量，从而实施真正的
 > 访问控制；若仍设为拒绝，fw4 会把面板已放行的流量一并拒绝。
@@ -178,21 +184,24 @@ chmod +x /etc/init.d/openvpn-pannel
 | `openvpn-pannel` | `/etc/init.d/openvpn-pannel` | procd 启动脚本 |
 | `client_online.sh` | 面板 → 资源文件 | 上线：ACL 放行 + 限速（`flock` 串行化） |
 | `client_offline.sh` | 面板 → 资源文件 | 下线：回收 ACL + 限速（`flock` 串行化） |
+| `acl_add.sh` | 面板 → 资源文件 | TOTP 二次认证通过后动态放行 ACL（仅启用 MFA 时用到） |
+| `acl_del.sh` | 面板 → 资源文件 | TOTP 登出后动态回收 ACL（仅启用 MFA 时用到） |
 | `ratelimit.sh` | 面板 → 资源文件 | 达量限速变化时重设 / 移除 tc 限速（`flock` 串行化） |
 | `server_start.sh` | 面板 → 资源文件 | 服务端启动：初始化 ACL 链 / ipset |
 | `server_exit.sh` | 面板 → 资源文件 | 服务端退出：回收 ACL 链 / ipset |
 | `misc` | 面板 → 资源文件 | 路径 / 文件名配置 |
 
-> 可选：需要纯 `nftables` 时，用仓库 `nftables-script/openwrt/` 下的
+> 可选：需要纯 `nftables` 时，用仓库 `nftables-scripts/openwrt/` 下的
 > `client_online.sh`、`client_offline.sh`、`server_start.sh`、`server_exit.sh`
-> 手动替换上表中对应的资源文件（详见 3.4）。
+> （以及启用 MFA 时的 `acl_add.sh`、`acl_del.sh`）手动替换上表中对应的资源文件（详见 3.4）。
 
 ---
 
 ## 6. 常见问题
 
 - **限速不生效**：确认已安装 `tc`，且内核包含 `sch_htb`、`cls_u32`、`act_police`、`sch_ingress`；并在面板「资源文件」中把 `ratelimit.sh` 替换为本目录的 OpenWrt 版本。缺失时脚本会记录日志并跳过限速，不影响连接；达量限速在运行中变化时依赖 `ratelimit.sh` 重设 tc。
-- **ACL 未生效**：默认脚本确认已安装 `ipset`。缺失时脚本会回落到逐条 `iptables` 模式（功能仍可用）。若使用 `nftables-script/openwrt/` 的版本，则无需 `ipset` / `iptables`，但需安装 `nftables`，并确认服务端启动脚本成功建立了 `openvpn_acl_<服务器ID>` 表。
+- **ACL 未生效**：默认脚本确认已安装 `ipset`。缺失时脚本会回落到逐条 `iptables` 模式（功能仍可用）。若使用 `nftables-scripts/openwrt/` 的版本，则无需 `ipset` / `iptables`，但需安装 `nftables`，并确认服务端启动脚本成功建立了 `openvpn_acl_<服务器ID>` 表。
+- **启用 MFA 后客户端一直无法上网**：确认已在客户端自助页面完成动态验证码验证；若使用 nftables 版本，请把 `acl_add.sh`、`acl_del.sh` 也一并替换为 `nftables-scripts/openwrt/` 下的同名文件。
 - **应用接口后地址消失**：属正常现象，见 3.6，重启服务器进程即可恢复。
 - **修改了资源脚本**：需在面板重新保存并重启服务，使新脚本生效。
 - **改了 `config.json`**：同样需要重启服务才生效。

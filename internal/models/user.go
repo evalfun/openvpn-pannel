@@ -13,6 +13,13 @@ const (
 	RATE_LIMIT_TYPE_FIXED = 3
 )
 
+// 多因素认证（MFA）类型。
+// 0 表示未启用；当前仅实现 TOTP，未来可扩展手机号、邮箱等类型。
+const (
+	MFA_TYPE_NONE = 0
+	MFA_TYPE_TOTP = 1
+)
+
 // 限速单位为 KB/s（千字节每秒，1024 字节）。
 // 约定：上传 = 服务器 -> 客户端；下载 = 客户端 -> 服务器。
 type User struct {
@@ -37,6 +44,12 @@ type User struct {
 	RateLimitCycleUpload uint64 `gorm:"not null;default:0" json:"rate_limit_cycle_upload"`
 	// RateLimitCycleDownload 当前周期内已完成会话累计的下载流量(字节)。下载=客户端->服务器。
 	RateLimitCycleDownload uint64 `gorm:"not null;default:0" json:"rate_limit_cycle_download"`
+	// MFAType 用户启用的多因素认证类型，0=未启用；当前支持 1=TOTP。
+	// 取值见 MFA_TYPE_* 常量，便于未来扩展手机号/邮箱等认证方式。
+	MFAType uint `gorm:"not null;default:0" json:"mfa_type"`
+	// MFAData 对应 MFAType 的认证数据（如 TOTP 的 Base32 密钥）。MFAType=0 时为空，
+	// 不通过接口明文返回。
+	MFAData string `gorm:"not null;default:''" json:"-"`
 }
 
 type Group struct {

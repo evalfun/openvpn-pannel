@@ -9,6 +9,8 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  Card,
+  CardContent,
   Button,
   Dialog,
   DialogTitle,
@@ -67,6 +69,7 @@ const Groups = () => {
   
   const [selectedGroup, setSelectedGroup] = useState(null);
   const [groupUsers, setGroupUsers] = useState([]);
+  const [selectedGroupUsers, setSelectedGroupUsers] = useState([]);
   const [groupUsersPage, setGroupUsersPage] = useState(1);
   const [groupUsersPageSize, setGroupUsersPageSize] = useState(10);
   const [groupUsersTotal, setGroupUsersTotal] = useState(0);
@@ -138,6 +141,8 @@ const Groups = () => {
         setGroupUsers(response.data.data || []);
         setGroupUsersTotal(total);
         setGroupUsersPage(p);
+        // 选中项可能已不在当前页，重新加载后清空选择
+        setSelectedGroupUsers([]);
       }
     } catch (err) {
       setGroupManageError('加载用户组用户失败');
@@ -208,6 +213,7 @@ const Groups = () => {
     //setTabValue(0);
     setOpenManageDialog(true);
     setGroupUsersPage(1);
+    setSelectedGroupUsers([]);
     await loadGroupUsers(group.name, 1, groupUsersPageSize);
     await loadGroupACLs(group.name);
   };
@@ -265,10 +271,49 @@ const Groups = () => {
       });
       if (response.data.result === 'success') {
         setGroupManageSuccess('用户移除成功');
+        setSelectedGroupUsers(prev => prev.filter(u => u !== username));
         await loadGroupUsers(selectedGroup.name, groupUsersPage, groupUsersPageSize);
       }
     } catch (err) {
       setGroupManageError(err.response?.data?.error || '移除用户失败');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleSelectGroupUser = (username) => {
+    setSelectedGroupUsers(prev =>
+      prev.includes(username) ? prev.filter(u => u !== username) : [...prev, username]
+    );
+  };
+
+  const handleSelectAllGroupUsers = (checked) => {
+    setSelectedGroupUsers(checked ? groupUsers.map(u => u.username) : []);
+  };
+
+  const handleRemoveUsers = async () => {
+    if (selectedGroupUsers.length === 0) {
+      setGroupManageError('请至少选择一个用户');
+      return;
+    }
+    if (!window.confirm(`确定要将选中的 ${selectedGroupUsers.length} 个用户移出该用户组吗？`)) {
+      return;
+    }
+    try {
+      setIsLoading(true);
+      const response = await groupAPI.removeUsersFromGroup({
+        group: selectedGroup.name,
+        users: selectedGroupUsers,
+      });
+      if (response.data.result === 'success') {
+        setGroupManageSuccess(`已移除 ${selectedGroupUsers.length} 个用户`);
+        setSelectedGroupUsers([]);
+        await loadGroupUsers(selectedGroup.name, groupUsersPage, groupUsersPageSize);
+      } else {
+        setGroupManageError(response.data.error || '批量移除用户失败');
+      }
+    } catch (err) {
+      setGroupManageError(err.response?.data?.error || '批量移除用户失败');
     } finally {
       setIsLoading(false);
     }
@@ -377,7 +422,12 @@ const Groups = () => {
         </Alert>
       )}
 
-      <Stack direction="row" spacing={2} sx={{ marginBottom: 2 }}>
+      <Stack
+        direction={isMobile ? 'column' : 'row'}
+        spacing={2}
+        alignItems={isMobile ? 'stretch' : 'center'}
+        sx={{ marginBottom: 2, flexWrap: 'wrap', gap: 1 }}
+      >
         <TextField
           placeholder="搜索用户组名"
           size="small"
@@ -388,7 +438,7 @@ const Groups = () => {
               handleSearch();
             }
           }}
-          sx={{ minWidth: 200 }}
+          sx={{ minWidth: isMobile ? 0 : 200 }}
         />
         <Button
           variant="contained"
@@ -422,6 +472,70 @@ const Groups = () => {
 
       
 
+      {isMobile ? (
+        <Box sx={{ marginBottom: 2 }}>
+          {groups.length > 0 ? (
+            groups.map((group) => (
+              <Card key={group.ID} variant="outlined" sx={{ marginBottom: 1.5 }}>
+                <CardContent sx={{ padding: 1.5, '&:last-child': { paddingBottom: 1.5 } }}>
+                  <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+                    <Typography variant="subtitle1" sx={{ fontWeight: 600, wordBreak: 'break-all' }}>{group.name}</Typography>
+                    <Typography variant="caption" color="text.secondary">ID {group.ID}</Typography>
+                  </Stack>
+                  <Stack spacing={0.5} sx={{ marginTop: 1 }}>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 1 }}>
+                      <Typography variant="body2" color="text.secondary" sx={{ flexShrink: 0 }}>描述</Typography>
+                      <Box
+                        onClick={() => {
+                          if (group.description) {
+                            setSelectedDescriptionText(group.description);
+                            setSelectedGroupNameForDesc(group.name);
+                            setOpenDescDialog(true);
+                          }
+                        }}
+                        sx={{
+                          textAlign: 'right',
+                          flex: 1,
+                          minWidth: 0,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                          cursor: group.description ? 'pointer' : 'default',
+                          color: group.description ? 'primary.main' : '#999',
+                          textDecoration: group.description ? 'underline' : 'none',
+                        }}
+                      >
+                        {group.description || '-'}
+                      </Box>
+                    </Box>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 1 }}>
+                      <Typography variant="body2" color="text.secondary" sx={{ flexShrink: 0 }}>限速</Typography>
+                      <Typography variant="body2" sx={{ textAlign: 'right' }}>
+                        {(!group.upload_limit_kb && !group.download_limit_kb)
+                          ? '不限速'
+                          : `↑${group.upload_limit_kb || 0} ↓${group.download_limit_kb || 0} KB/s`}
+                      </Typography>
+                    </Box>
+                  </Stack>
+                  <Button
+                    sx={{ marginTop: 1.5 }}
+                    size="small"
+                    variant="outlined"
+                    startIcon={<ManageIcon />}
+                    onClick={() => handleManageGroup(group)}
+                  >
+                    管理
+                  </Button>
+                </CardContent>
+              </Card>
+            ))
+          ) : (
+            <Paper variant="outlined" sx={{ padding: 3, textAlign: 'center' }}>
+              <Typography color="textSecondary">暂无用户组</Typography>
+            </Paper>
+          )}
+        </Box>
+      ) : (
       <TableContainer component={Paper} sx={{ marginBottom: 2 }}>
         <Table>
           <TableHead sx={{ backgroundColor: '#f5f5f5' }}>
@@ -492,6 +606,7 @@ const Groups = () => {
           </TableBody>
         </Table>
       </TableContainer>
+      )}
 
       <Stack direction="row" spacing={2} alignItems="center" sx={{ marginBottom: 3 }}>
         <FormControl sx={{ minWidth: 120 }}>
@@ -655,7 +770,7 @@ const Groups = () => {
           {/* 用户管理Tab */}
           {tabValue === 0 && (
             <Box sx={{ marginTop: 2 }}>
-              <Stack direction="row" spacing={2} sx={{ marginBottom: 2 }}>
+              <Stack direction="row" spacing={2} sx={{ marginBottom: 2, flexWrap: 'wrap', gap: 1 }}>
                 <Button
                   variant="contained"
                   color="success"
@@ -678,12 +793,84 @@ const Groups = () => {
                 >
                   刷新
                 </Button>
+                {selectedGroupUsers.length > 0 && (
+                  <Button
+                    variant="contained"
+                    color="error"
+                    startIcon={<DeleteIcon />}
+                    onClick={handleRemoveUsers}
+                    disabled={isLoading}
+                  >
+                    批量删除 ({selectedGroupUsers.length})
+                  </Button>
+                )}
               </Stack>
 
+              {isMobile ? (
+                <Box>
+                  {groupUsers.length > 0 && (
+                    <Stack direction="row" alignItems="center" spacing={1} sx={{ marginBottom: 1 }}>
+                      <Checkbox
+                        size="small"
+                        indeterminate={selectedGroupUsers.length > 0 && selectedGroupUsers.length < groupUsers.length}
+                        checked={groupUsers.length > 0 && selectedGroupUsers.length === groupUsers.length}
+                        onChange={(e) => handleSelectAllGroupUsers(e.target.checked)}
+                      />
+                      <Typography variant="body2" color="text.secondary">全选</Typography>
+                      {selectedGroupUsers.length > 0 && (
+                        <Typography variant="body2" color="text.secondary">已选 {selectedGroupUsers.length}</Typography>
+                      )}
+                    </Stack>
+                  )}
+                  {groupUsers.length > 0 ? (
+                    groupUsers.map((user) => (
+                      <Card key={user.ID} variant="outlined" sx={{ marginBottom: 1.5 }}>
+                        <CardContent sx={{ padding: 1.5, '&:last-child': { paddingBottom: 1.5 } }}>
+                          <Stack direction="row" alignItems="center" spacing={1}>
+                            <Checkbox
+                              size="small"
+                              checked={selectedGroupUsers.includes(user.username)}
+                              onChange={() => handleSelectGroupUser(user.username)}
+                              sx={{ padding: 0.5 }}
+                            />
+                            <Typography variant="subtitle1" sx={{ fontWeight: 600, flex: 1, wordBreak: 'break-all' }}>{user.username}</Typography>
+                            <Typography variant="caption" color="text.secondary">ID {user.ID}</Typography>
+                          </Stack>
+                          <Typography variant="body2" color="text.secondary" sx={{ marginTop: 0.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {user.description || '-'}
+                          </Typography>
+                          <Button
+                            sx={{ marginTop: 1.5 }}
+                            size="small"
+                            variant="outlined"
+                            color="error"
+                            startIcon={<DeleteIcon />}
+                            onClick={() => handleRemoveUser(user.username)}
+                          >
+                            删除
+                          </Button>
+                        </CardContent>
+                      </Card>
+                    ))
+                  ) : (
+                    <Paper variant="outlined" sx={{ padding: 3, textAlign: 'center' }}>
+                      <Typography color="textSecondary">该用户组中暂无用户</Typography>
+                    </Paper>
+                  )}
+                </Box>
+              ) : (
               <TableContainer component={Paper}>
                 <Table>
                   <TableHead sx={{ backgroundColor: '#f5f5f5' }}>
                     <TableRow>
+                      <TableCell sx={{ fontWeight: 'bold', width: '50px' }}>
+                        <Checkbox
+                          size="small"
+                          indeterminate={selectedGroupUsers.length > 0 && selectedGroupUsers.length < groupUsers.length}
+                          checked={groupUsers.length > 0 && selectedGroupUsers.length === groupUsers.length}
+                          onChange={(e) => handleSelectAllGroupUsers(e.target.checked)}
+                        />
+                      </TableCell>
                       <TableCell sx={{ fontWeight: 'bold' }}>用户ID</TableCell>
                       <TableCell sx={{ fontWeight: 'bold' }}>用户名</TableCell>
                       <TableCell sx={{ fontWeight: 'bold' }}>描述</TableCell>
@@ -696,9 +883,16 @@ const Groups = () => {
                     {groupUsers.length > 0 ? (
                       groupUsers.map((user) => (
                         <TableRow key={user.ID} hover>
+                          <TableCell sx={{paddingTop:1, paddingBottom:1, width: '50px'}}>
+                            <Checkbox
+                              size="small"
+                              checked={selectedGroupUsers.includes(user.username)}
+                              onChange={() => handleSelectGroupUser(user.username)}
+                            />
+                          </TableCell>
                           <TableCell  sx={{paddingTop:1, paddingBottom:1}} >{user.ID}</TableCell>
                           <TableCell  sx={{paddingTop:1, paddingBottom:1}} >{user.username}</TableCell>
-                          <TableCell  sx={{paddingTop:1, paddingBottom:1}} >{user.description || '-'}</TableCell>
+                          <TableCell  sx={{paddingTop:1, paddingBottom:1, maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}} >{user.description || '-'}</TableCell>
                           <TableCell  sx={{paddingTop:1, paddingBottom:1}}  >
                             <Button
                               size="small"
@@ -714,7 +908,7 @@ const Groups = () => {
                       ))
                     ) : (
                       <TableRow>
-                        <TableCell colSpan={4} align="center">
+                        <TableCell colSpan={5} align="center">
                           该用户组中暂无用户
                         </TableCell>
                       </TableRow>
@@ -722,6 +916,7 @@ const Groups = () => {
                   </TableBody>
                 </Table>
               </TableContainer>
+              )}
 
               <Stack direction="row" spacing={2} alignItems="center" sx={{ marginTop: 2, flexWrap: 'wrap', gap: 1 }}>
                 <FormControl sx={{ minWidth: 120 }} size="small">
@@ -789,6 +984,43 @@ const Groups = () => {
                 )}
               </Stack>
 
+              {isMobile ? (
+                <Box>
+                  {groupACLs.length > 0 ? (
+                    groupACLs.map((acl) => (
+                      <Card key={acl.id} variant="outlined" sx={{ marginBottom: 1.5 }}>
+                        <CardContent sx={{ padding: 1.5, '&:last-child': { paddingBottom: 1.5 } }}>
+                          <Stack direction="row" alignItems="center" spacing={1}>
+                            <Checkbox
+                              size="small"
+                              checked={selectedACLs.includes(acl.id)}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedACLs([...selectedACLs, acl.id]);
+                                } else {
+                                  setSelectedACLs(selectedACLs.filter(id => id !== acl.id));
+                                }
+                              }}
+                              sx={{ padding: 0.5 }}
+                            />
+                            <Chip
+                              label={acl.type === 4 ? 'IPv4' : 'IPv6'}
+                              size="small"
+                              color={acl.type === 4 ? 'primary' : 'info'}
+                            />
+                            <Typography variant="caption" color="text.secondary" sx={{ flex: 1, textAlign: 'right' }}>ID {acl.id}</Typography>
+                          </Stack>
+                          <Typography variant="body2" sx={{ marginTop: 0.5, wordBreak: 'break-all' }}>{acl.value}</Typography>
+                        </CardContent>
+                      </Card>
+                    ))
+                  ) : (
+                    <Paper variant="outlined" sx={{ padding: 3, textAlign: 'center' }}>
+                      <Typography color="textSecondary">该用户组中暂无ACL</Typography>
+                    </Paper>
+                  )}
+                </Box>
+              ) : (
               <TableContainer component={Paper}>
                 <Table>
                   <TableHead sx={{ backgroundColor: '#f5f5f5' }}>
@@ -836,6 +1068,7 @@ const Groups = () => {
                   </TableBody>
                 </Table>
               </TableContainer>
+              )}
             </Box>
           )}
 
@@ -990,7 +1223,7 @@ const Groups = () => {
                   handleSearchUsers();
                 }
               }}
-              sx={{ minWidth: 200, flex: 1 }}
+              sx={{ minWidth: isMobile ? 0 : 200, flex: 1 }}
             />
             <Button
               variant="outlined"
@@ -1004,6 +1237,47 @@ const Groups = () => {
           
           {availableUsersLoading && <CircularProgress sx={{ marginBottom: 2 }} />}
           
+          {isMobile ? (
+            <Box sx={{ marginBottom: 2 }}>
+              <Stack direction="row" alignItems="center" spacing={1} sx={{ marginBottom: 1 }}>
+                <Checkbox
+                  size="small"
+                  indeterminate={selectedUsers.length > 0 && selectedUsers.length < allUsers.length}
+                  checked={allUsers.length > 0 && selectedUsers.length === allUsers.length}
+                  onChange={handleSelectAllAvailableUsers}
+                />
+                <Typography variant="body2" color="text.secondary">全选</Typography>
+                {selectedUsers.length > 0 && (
+                  <Typography variant="body2" color="text.secondary">已选 {selectedUsers.length}</Typography>
+                )}
+              </Stack>
+              {allUsers.length > 0 ? (
+                allUsers.map((user) => (
+                  <Card key={user.id} variant="outlined" sx={{ marginBottom: 1.5 }}>
+                    <CardContent sx={{ padding: 1.5, '&:last-child': { paddingBottom: 1.5 } }}>
+                      <Stack direction="row" alignItems="center" spacing={1}>
+                        <Checkbox
+                          size="small"
+                          checked={selectedUsers.includes(user.id)}
+                          onChange={() => handleSelectUser(user.id)}
+                          sx={{ padding: 0.5 }}
+                        />
+                        <Typography variant="subtitle1" sx={{ fontWeight: 600, flex: 1, wordBreak: 'break-all' }}>{user.username}</Typography>
+                        <Typography variant="caption" color="text.secondary">ID {user.id}</Typography>
+                      </Stack>
+                      <Typography variant="body2" color="text.secondary" sx={{ marginTop: 0.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {user.description || '无'}
+                      </Typography>
+                    </CardContent>
+                  </Card>
+                ))
+              ) : (
+                <Paper variant="outlined" sx={{ padding: 3, textAlign: 'center' }}>
+                  <Typography color="textSecondary">{availableUsersLoading ? '加载中...' : '没有可添加的用户'}</Typography>
+                </Paper>
+              )}
+            </Box>
+          ) : (
           <TableContainer component={Paper} sx={{ marginBottom: 2 }}>
             <Table>
               <TableHead sx={{ backgroundColor: '#f5f5f5' }}>
@@ -1032,7 +1306,7 @@ const Groups = () => {
                       </TableCell>
                       <TableCell  sx={{padding: 0}}>{user.id}</TableCell>
                       <TableCell  sx={{padding: 0}}>{user.username}</TableCell>
-                      <TableCell  sx={{padding: 0}}>{user.description || '无'}</TableCell>
+                      <TableCell  sx={{padding: 0, maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{user.description || '无'}</TableCell>
                     </TableRow>
                   ))
                 ) : (
@@ -1045,6 +1319,7 @@ const Groups = () => {
               </TableBody>
             </Table>
           </TableContainer>
+          )}
 
           {availableUsersCount > 0 && (
             <Stack direction="row" spacing={2} alignItems="center">

@@ -60,6 +60,7 @@ func main() {
 			PasswordSalt:      "g8w47diqwhduwgf",
 			SessionSecret:     "secret-key-32-byte-long-00001111",
 			InternalAPIListen: "127.0.0.1:59003",
+			ClientPageListen:  "10.8.0.1:8088",
 			AllowEditResource: false,
 		}
 		data, err := json.MarshalIndent(demoConfig, "", "  ")

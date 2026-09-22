@@ -101,6 +101,7 @@ func (a *App) setupRoutes() {
 		api.GET("/group/user/list", a.AdminLoginWarper(a.ListUsersInGroupHandler))
 		api.POST("/group/user/add", a.AdminLoginWarper(a.AddUserToGroupHandler))
 		api.POST("/group/user/remove", a.AdminLoginWarper(a.RemoveUserFromGroupHandler))
+		api.POST("/group/user/remove/batch", a.AdminLoginWarper(a.BatchRemoveUsersFromGroupHandler))
 		api.POST("/group/user/add/batch", a.AdminLoginWarper(a.BatchAddUsersToGroupHandler))
 
 		api.POST("/group/acl/add", a.AdminLoginWarper(a.AddGroupACLHandler))

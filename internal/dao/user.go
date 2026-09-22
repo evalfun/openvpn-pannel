@@ -180,6 +180,26 @@ func (um *DaoManager) UpdateUserInfo(userID uint, description, password string, 
 	return um.DB.Save(&user).Error
 }
 
+// SetUserMFA 设置用户的多因素认证类型与数据。mfaType 为 MFA_TYPE_NONE 时清空数据。
+func (um *DaoManager) SetUserMFA(userID uint, mfaType uint, data string) error {
+	if mfaType == models.MFA_TYPE_NONE {
+		data = ""
+	}
+	result := um.DB.Model(&models.User{}).
+		Where("id = ?", userID).
+		Updates(map[string]interface{}{
+			"mfa_type": mfaType,
+			"mfa_data": data,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
 func (um *DaoManager) UpdateUserTraffic(username string, uploadBytes, downloadBytes uint64) error {
 	result := um.DB.Model(&models.User{}).
 		Where("username = ?", username).

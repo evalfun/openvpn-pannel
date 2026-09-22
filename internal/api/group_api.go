@@ -391,6 +391,32 @@ func (a *App) RemoveUserFromGroupHandler(c *gin.Context, u *models.User) {
 	})
 }
 
+// 批量从用户组中移除用户
+func (a *App) BatchRemoveUsersFromGroupHandler(c *gin.Context, u *models.User) {
+	type Param struct {
+		UserNameList []string `json:"users"  binding:"required,min=1,dive,max=100"`
+		GroupName    string   `json:"group"  binding:"required,min=1,max=100"`
+	}
+	var param Param
+	err := c.ShouldBindJSON(&param)
+	if err != nil {
+		c.JSON(400, gin.H{"result": "failed",
+			"error": err.Error(),
+		})
+		return
+	}
+	if err := a.daoManager.BatchRemoveUsersFromGroup(param.UserNameList, param.GroupName); err != nil {
+		c.JSON(400, gin.H{"result": "failed",
+			"error": "批量移除用户失败 " + err.Error(),
+		})
+		return
+	}
+	c.JSON(200, gin.H{
+		"result": "success",
+		"error":  nil,
+	})
+}
+
 // 更新用户组
 func (a *App) UpdateGroupHandler(c *gin.Context, u *models.User) {
 	type Param struct {

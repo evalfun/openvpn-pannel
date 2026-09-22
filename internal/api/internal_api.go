@@ -95,6 +95,10 @@ func (a *App) UserAuthInternalHandler(c *gin.Context) {
 		}
 		c.String(200, "result="+"success")
 		a.daoManager.CreateEvent(uint(serverID), models.SERVER_EVENT_TYPE_CLIENT_AUTH_SUCCESS, requestData["real_ip_addr"], fmt.Sprintf("登录成功 证书=%s 用户=%s", requestData["client_cert_name"], username))
+		// 启用二次认证的客户端：记录“一次认证成功”（用户名密码通过，等待 TOTP）。
+		if userModel.MFAType != models.MFA_TYPE_NONE {
+			a.daoManager.CreateEvent(uint(serverID), models.SERVER_EVENT_TYPE_FIRST_AUTH_SUCCESS, requestData["real_ip_addr"], fmt.Sprintf("一次认证成功(等待二次认证) 证书=%s 用户=%s", requestData["client_cert_name"], username))
+		}
 	} else {
 		c.String(403, "result="+"没有权限")
 		a.daoManager.CreateEvent(uint(serverID), models.SERVER_EVENT_TYPE_CLIENT_AUTH_FAIL, requestData["real_ip_addr"], fmt.Sprintf("没有权限 证书=%s 用户=%s", requestData["client_cert_name"], username))
@@ -191,6 +195,8 @@ func (a *App) UserOnlineInternalHandler(c *gin.Context) {
 		Username:        string(username),
 		UploadLimitKB:   appliedUploadKB,
 		DownloadLimitKB: appliedDownloadKB,
+		ClientCertName:  clientCertName,
+		RealIPAddr:      realIPAddr,
 	})
 	if err != nil {
 		log.Println("记录用户在线信息失败" + err.Error())
@@ -255,6 +261,15 @@ func (a *App) UserOfflineInternalHandler(c *gin.Context) {
 	}
 	a.daoManager.CreateEvent(uint(serverID), models.SERVER_EVENT_TYPE_CLIENT_OFFLINE, realIPAddr, fmt.Sprintf("证书=%s 用户=%s IP=%s 虚拟IP=%s 发送=%s 接收=%s 发送字节数=%d 接收字节数=%d",
 		clientCertName, username, realIPAddr, virtualIPAddr, getReadableFileSize(bytesSend), getReadableFileSize(bytesReceived), bytesSend, bytesReceived))
+	// 启用二次认证的客户端：记录下线事件。
+	// 若二次认证已通过但未在客户端页面登出（即还没有“二次认证下线”），
+	// VPN 会话结束时先补记一条“二次认证下线”，紧接着记录“一次认证下线”。
+	if userModel, uErr := a.daoManager.GetUserByUsername(string(username)); uErr == nil && userModel.MFAType != models.MFA_TYPE_NONE {
+		if rec, rErr := a.daoManager.GetConnectedClientInfoRecord(uint(serverID), virtualIPAddr); rErr == nil && rec.MFAVerified {
+			a.daoManager.CreateEvent(uint(serverID), models.SERVER_EVENT_TYPE_SECOND_AUTH_LOGOUT, realIPAddr, fmt.Sprintf("二次认证下线(随VPN会话结束) 证书=%s 用户=%s 虚拟IP=%s", clientCertName, username, virtualIPAddr))
+		}
+		a.daoManager.CreateEvent(uint(serverID), models.SERVER_EVENT_TYPE_FIRST_AUTH_LOGOUT, realIPAddr, fmt.Sprintf("一次认证下线 证书=%s 用户=%s 虚拟IP=%s", clientCertName, username, virtualIPAddr))
+	}
 
 	err = a.daoManager.UpdateUserTraffic(string(username), bytesSend, bytesReceived)
 	if err != nil {
@@ -303,6 +318,13 @@ func (a *App) GetUserACLInternalHandler(c *gin.Context) {
 	userModel, err := a.daoManager.GetUserByUsername(string(username))
 	if err != nil {
 		c.String(404, "result="+"用户不存在")
+		return
+	}
+	// 启用 TOTP 的用户：VPN 认证通过但暂不下发任何 ACL，需在客户端自助页面
+	// 输入动态验证码后才由面板调用 acl_add.sh 放行（见 client_page.go）。
+	if userModel.MFAType != models.MFA_TYPE_NONE {
+		a.daoManager.CreateEvent(uint(serverID), models.SERVER_EVENT_TYPE_ADD_ACL, realIPAddr, fmt.Sprintf("用户=%s 已启用二次认证，等待客户端页面验证后再下发ACL", username))
+		c.String(200, "")
 		return
 	}
 	var addedACLRecordList []*models.AddedServerACLRecord

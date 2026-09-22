@@ -47,6 +47,11 @@ const EVENT_TYPE_MAP = {
     8: { label: '服务端启动失败', color: 'error' },
     9: { label: '添加用户ACL', color: 'info' },
     10: { label: '删除用户ACL', color: 'info' },
+    11: { label: '一次认证成功', color: 'success' },
+    12: { label: '二次认证成功', color: 'success' },
+    13: { label: '二次认证下线', color: 'warning' },
+    14: { label: '一次认证下线', color: 'warning' },
+    15: { label: '服务器已恢复', color: 'success' },
 };
 
 // 格式化字节大小

@@ -39,6 +39,15 @@ type App struct {
 func (a *App) Run() {
 	a.AutoStartOpenVPNServer()
 	go a.internalAPIRouter.Run(a.cfg.InternalAPIListen)
+	// 面向已连接 VPN 客户端的自助页面（额外端口），未配置则不启用。
+	if a.cfg.ClientPageListen != "" {
+		clientPageRouter := a.SetupClientPageRouter()
+		go func() {
+			if err := clientPageRouter.Run(a.cfg.ClientPageListen); err != nil {
+				log.Printf("客户端自助页面监听失败 %s: %v", a.cfg.ClientPageListen, err)
+			}
+		}()
+	}
 	go a.StartConnectedClientInfoUpdater(60 * time.Second)
 	go a.StartLogRotationTask(60 * time.Second)
 	go a.StartServerKeepAliveTask(60 * time.Second)

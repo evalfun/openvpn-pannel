@@ -103,7 +103,7 @@ func (a *App) CreateOpenVPNServerHandler(c *gin.Context, user *models.User) {
 	}
 	for _, id := range certRefIDs(param.CA, param.Cert, param.Key) {
 		if cert, err := a.daoManager.GetCertificateByID(id); err == nil {
-			a.logCertificateEvent(c, models.CERT_EVENT_TYPE_SERVER_REFERENCE, "服务器引用证书", cert, serverModel)
+			a.logCertificateEvent(c, user, models.CERT_EVENT_TYPE_SERVER_REFERENCE, "服务器引用证书", cert, serverModel)
 		}
 	}
 	c.JSON(200, gin.H{
@@ -287,7 +287,7 @@ func (a *App) UpdateOpenVPNServerHandler(c *gin.Context, user *models.User) {
 			continue
 		}
 		if cert, err := a.daoManager.GetCertificateByID(id); err == nil {
-			a.logCertificateEvent(c, models.CERT_EVENT_TYPE_SERVER_REFERENCE, "服务器引用证书", cert, serverModel)
+			a.logCertificateEvent(c, user, models.CERT_EVENT_TYPE_SERVER_REFERENCE, "服务器引用证书", cert, serverModel)
 		}
 	}
 	c.JSON(200, gin.H{
@@ -1284,6 +1284,10 @@ func (a *App) startServerLocked(serverModel *models.Server, source string) {
 		return
 	}
 	a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_START_SUCCESS, source, "服务器启动成功")
+	// 看门狗（keepalive）拉起：说明服务器此前异常退出，额外记录一条“已恢复”事件。
+	if source == "keepalive" {
+		a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_RECOVERED, source, "服务器异常退出后已被看门狗自动拉起，服务器已恢复")
+	}
 	a.daoManager.DeleteAddedACLByServerID(serverModel.ID)
 	a.daoManager.DeleteConnectedClientInfoRecordByServerID(serverModel.ID)
 }

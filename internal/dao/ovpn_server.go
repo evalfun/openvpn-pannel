@@ -572,6 +572,22 @@ func (um *DaoManager) ListConnectedClientInfoRecordByUsername(username string) (
 	return infoList, err
 }
 
+// ListConnectedClientInfoRecordByVirtualIP 按虚拟 IP 列出所有在线会话（可能属于不同服务器）。
+// 供客户端自助页面依据 HTTP 来源 IP 识别客户端使用。
+func (um *DaoManager) ListConnectedClientInfoRecordByVirtualIP(virtualIPAddr string) ([]*models.ConnectedClientInfoRecord, error) {
+	var infoList []*models.ConnectedClientInfoRecord
+	err := um.DB.Where("virtual_ip_addr = ?", virtualIPAddr).Find(&infoList).Error
+	return infoList, err
+}
+
+// UpdateConnectedClientInfoRecordMFAVerified 更新某会话的多因素认证验证状态。
+func (um *DaoManager) UpdateConnectedClientInfoRecordMFAVerified(serverID uint, virtualIPAddr string, verified bool) error {
+	result := um.DB.Model(&models.ConnectedClientInfoRecord{}).
+		Where("server_id = ? and virtual_ip_addr = ?", serverID, virtualIPAddr).
+		Update("mfa_verified", verified)
+	return result.Error
+}
+
 // UpdateConnectedClientInfoRecordLimitByUsername 更新某用户所有在线会话的已下发限速。
 func (um *DaoManager) UpdateConnectedClientInfoRecordLimitByUsername(username string, uploadKB, downloadKB uint64) error {
 	result := um.DB.Model(&models.ConnectedClientInfoRecord{}).

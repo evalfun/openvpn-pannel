@@ -10,6 +10,7 @@ const (
 	CERT_EVENT_TYPE_DOWNLOAD_KEY     = 6 // 下载私钥
 	CERT_EVENT_TYPE_SERVER_REFERENCE = 7 // 服务器引用证书
 	CERT_EVENT_TYPE_CLIENT_REFERENCE = 8 // 导出客户端配置时引用证书
+	CERT_EVENT_TYPE_CLEAR            = 9 // 清空证书事件（清空后记录一条，用于审计）
 )
 
 // CertificateEvent 证书操作审计事件（独立表，不属于任何服务器）。
@@ -23,4 +24,7 @@ type CertificateEvent struct {
 	CertName   string `gorm:"not null;default:''" json:"cert_name"`
 	ServerID   uint   `gorm:"not null;default:0;index" json:"server_id"`
 	ServerName string `gorm:"not null;default:''" json:"server_name"`
+	// OperatorUserID/OperatorUsername 记录执行该操作的面板用户（审计用）。
+	OperatorUserID   uint   `gorm:"not null;default:0;index" json:"operator_user_id"`
+	OperatorUsername string `gorm:"not null;default:''" json:"operator_username"`
 }

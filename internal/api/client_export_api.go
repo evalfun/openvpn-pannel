@@ -152,7 +152,7 @@ func (a *App) ExportClientConfigHandler(c *gin.Context, user *models.User) {
 
 	// 仅当从证书管理选择了客户端证书时才记录审计事件（手动填写的证书不记录）
 	if auditCert != nil {
-		a.logCertificateEvent(c, models.CERT_EVENT_TYPE_CLIENT_REFERENCE, "客户端引用证书", auditCert, server)
+		a.logCertificateEvent(c, user, models.CERT_EVENT_TYPE_CLIENT_REFERENCE, "客户端引用证书", auditCert, server)
 	}
 
 	if param.Save == nil || *param.Save {

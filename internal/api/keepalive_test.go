@@ -122,6 +122,15 @@ func TestKeepAliveRestartsCrashedServer(t *testing.T) {
 		t.Fatalf("expected a new PID after restart, got same %d", oldPID)
 	}
 
+	// 看门狗拉起后应记录“服务器已恢复”事件
+	resp, err := dm.GetEventList(server.ID, []int{models.SERVER_EVENT_TYPE_SERVER_RECOVERED}, "", 0, 0, 1, 10)
+	if err != nil {
+		t.Fatalf("get event list: %v", err)
+	}
+	if resp.Total < 1 {
+		t.Fatalf("expected a SERVER_RECOVERED event, got total=%d", resp.Total)
+	}
+
 	// 主动停止后不应再被保活拉起。
 	if err := ins2.Stop(app.PrepareResourceMap([]string{ovpnserver.RESOURCE_ID_MISC_CONFIG, ovpnserver.RESOURCE_ID_SERVER_EXIT_SCRIPT})); err != nil {
 		t.Fatalf("stop: %v", err)

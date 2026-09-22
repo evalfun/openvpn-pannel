@@ -63,3 +63,38 @@ func TestListUsersInGroupPaged(t *testing.T) {
 		t.Fatalf("search result = %+v count=%d", filtered, count)
 	}
 }
+
+func TestBatchRemoveUsersFromGroup(t *testing.T) {
+	dm := newTestDaoManager(t)
+	if err := dm.CreateGroup("g1", "", 0, 0); err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	for _, name := range []string{"u1", "u2", "u3"} {
+		if err := dm.CreateUserWithGroup(name, "pw", "", "g1"); err != nil {
+			t.Fatalf("create user %s: %v", name, err)
+		}
+	}
+	group, _ := dm.GetGroupByName("g1")
+
+	// 批量移除 u1/u2，并混入一个不存在的用户（应被忽略）
+	if err := dm.BatchRemoveUsersFromGroup([]string{"u1", "u2", "not-exist"}, "g1"); err != nil {
+		t.Fatalf("BatchRemoveUsersFromGroup: %v", err)
+	}
+	_, count, err := dm.ListUsersInGroupPaged(group.ID, "", 1, 10)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("移除后组内用户数 = %d, want 1", count)
+	}
+	if u, err := dm.GetUserByUsername("u3"); err != nil {
+		t.Fatalf("u3: %v", err)
+	} else if in, _ := dm.UserInGroup(u.ID, group.ID); !in {
+		t.Fatalf("u3 应仍在组内")
+	}
+
+	// 组不存在时报错
+	if err := dm.BatchRemoveUsersFromGroup([]string{"u3"}, "no-such-group"); err == nil {
+		t.Fatalf("组不存在时应报错")
+	}
+}

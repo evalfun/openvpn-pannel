@@ -9,6 +9,8 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  Card,
+  CardContent,
   Button,
   Dialog,
   DialogTitle,
@@ -29,6 +31,8 @@ import {
   Tab,
   Chip,
   Checkbox,
+  Switch,
+  FormControlLabel,
   useMediaQuery,
   useTheme,
 } from '@mui/material';
@@ -140,6 +144,8 @@ const Users = () => {
   
   const [openUserInfoDialog, setOpenUserInfoDialog] = useState(false);
   const [userInfoTabValue, setUserInfoTabValue] = useState(0);
+  // MFA 认证数据展示（启用/重置 MFA 后）
+  const [mfaSecretInfo, setMfaSecretInfo] = useState(null);
   const [selectedUser, setSelectedUser] = useState(null);
   const [userGroups, setUserGroups] = useState([]);
   const [userServerPerms, setUserServerPerms] = useState({});
@@ -301,6 +307,8 @@ const Users = () => {
       rate_limit_type: user.rate_limit_type ?? 1,
       upload_limit_kb: user.upload_limit_kb ?? 0,
       download_limit_kb: user.download_limit_kb ?? 0,
+      mfa_type: user.mfa_type ?? 0,
+      mfa_regenerate: false,
     });
     setEditUserError('');
     setOpenEditDialog(true);
@@ -315,6 +323,8 @@ const Users = () => {
         rate_limit_type: editingUser.rate_limit_type,
         upload_limit_kb: editingUser.upload_limit_kb,
         download_limit_kb: editingUser.download_limit_kb,
+        mfa_type: editingUser.mfa_type ?? 0,
+        mfa_regenerate: !!editingUser.mfa_regenerate,
       };
       if (editingUser.password) {
         updateData.password = editingUser.password;
@@ -323,6 +333,15 @@ const Users = () => {
       if (response.data.result === 'success') {
         setSuccess('用户信息更新成功');
         setOpenEditDialog(false);
+        // 启用/重置 MFA 时后端会返回新认证数据，弹框展示给用户绑定认证器
+        if (response.data.mfa_data) {
+          setMfaSecretInfo({
+            username: editingUser.username,
+            secret: response.data.mfa_data,
+            uri: response.data.mfa_uri || '',
+            qr: response.data.mfa_qr || '',
+          });
+        }
         reloadUsers();
       } else {
         setEditUserError(response.data.error || '更新失败');
@@ -407,11 +426,6 @@ const Users = () => {
   const handleSelectAllUsers = useCallback((checked) => {
     setSelectedUserIds(checked ? users.map(u => u.id) : []);
   }, [users]);
-
-  const truncateText = (text, length = 50) => {
-    if (!text) return '';
-    return text.length > length ? text.substring(0, length) + '...' : text;
-  };
 
   const formatTraffic = (bytes) => {
     if (bytes === 0) return '0 B';
@@ -558,6 +572,92 @@ const Users = () => {
       );
     };
 
+    // 权限类型标签（表格与卡片共用）
+    const renderRuleChips = (ruleStatus) => (
+      <Stack spacing={0.5} direction="row" flexWrap="wrap" useFlexGap>
+        {ruleStatus.userDeny && (
+          <Chip label="用户拒绝" size="small" color="error" variant="filled" />
+        )}
+        {ruleStatus.userAllow && (
+          <Tooltip title={ruleStatus.userAllowDisabled ? '被用户拒绝策略覆盖，此条目不生效' : ''}>
+            <span>
+              <Chip
+                label="用户允许"
+                size="small"
+                variant={ruleStatus.userAllowDisabled ? 'outlined' : 'filled'}
+                sx={{
+                  textDecoration: ruleStatus.userAllowDisabled ? 'line-through' : 'none',
+                  opacity: ruleStatus.userAllowDisabled ? 0.5 : 1,
+                  backgroundColor: ruleStatus.userAllowDisabled ? 'transparent' : '#FFD700',
+                  color: ruleStatus.userAllowDisabled ? '#999' : '#000',
+                }}
+              />
+            </span>
+          </Tooltip>
+        )}
+        {ruleStatus.groupDeny && (
+          <Tooltip title={ruleStatus.groupDisabled ? '被用户规则覆盖，此条目不生效' : ''}>
+            <span>
+              <Chip
+                label="组拒绝"
+                size="small"
+                color="error"
+                variant={ruleStatus.groupDisabled ? 'outlined' : 'filled'}
+                sx={{
+                  textDecoration: ruleStatus.groupDisabled ? 'line-through' : 'none',
+                  opacity: ruleStatus.groupDisabled ? 0.5 : 1,
+                }}
+              />
+            </span>
+          </Tooltip>
+        )}
+        {ruleStatus.groupAllow && (
+          <Tooltip title={ruleStatus.groupDisabled ? '被用户规则覆盖，此条目不生效' : ruleStatus.groupAllowDisabledByGroupDeny ? '被组拒绝规则覆盖，此条目不生效' : ''}>
+            <span>
+              <Chip
+                label="组允许"
+                size="small"
+                color="info"
+                variant={ruleStatus.groupDisabled || ruleStatus.groupAllowDisabledByGroupDeny ? 'outlined' : 'filled'}
+                sx={{
+                  textDecoration: ruleStatus.groupDisabled || ruleStatus.groupAllowDisabledByGroupDeny ? 'line-through' : 'none',
+                  opacity: ruleStatus.groupDisabled || ruleStatus.groupAllowDisabledByGroupDeny ? 0.5 : 1,
+                }}
+              />
+            </span>
+          </Tooltip>
+        )}
+      </Stack>
+    );
+
+    if (isMobile) {
+      return allServers.size > 0 ? (
+        <Box>
+          {Array.from(allServers.values()).map((server) => {
+            const ruleStatus = getRuleStatus(server.id, server.types);
+            return (
+              <Card key={server.id} variant="outlined" sx={{ marginBottom: 1.5 }}>
+                <CardContent sx={{ padding: 1.5, '&:last-child': { paddingBottom: 1.5 } }}>
+                  <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+                    <Typography variant="subtitle1" sx={{ fontWeight: 600, wordBreak: 'break-all' }}>{server.name}</Typography>
+                    <Typography variant="caption" color="text.secondary">ID {server.id}</Typography>
+                  </Stack>
+                  <Typography variant="body2" color="text.secondary" sx={{ marginTop: 0.5 }}>{server.proto}/{server.port}</Typography>
+                  <Box sx={{ marginTop: 1 }}>{renderRuleChips(ruleStatus)}</Box>
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 1, marginTop: 1, minWidth: 0 }}>
+                    <Typography variant="body2" color="text.secondary" sx={{ flexShrink: 0 }}>ACL信息</Typography>
+                    <Box sx={{ textAlign: 'right', minWidth: 0 }}>{renderAclCell(server)}</Box>
+                  </Box>
+                </CardContent>
+              </Card>
+            );
+          })}
+        </Box>
+      ) : (
+        <Typography sx={{ paddingTop: 2 }}>无服务器权限</Typography>
+      );
+    }
+
     return (
       <TableContainer component={Paper}>
         <Table size="small">
@@ -580,60 +680,7 @@ const Users = () => {
                     <TableCell sx={{ paddingTop: 0.5, paddingBottom: 0.5 }}>{server.name}</TableCell>
                     <TableCell sx={{ paddingTop: 0.5, paddingBottom: 0.5 }}>{server.proto}/{server.port}</TableCell>
                     <TableCell sx={{ paddingTop: 0.5, paddingBottom: 0.5 }}>
-                      <Stack spacing={0.5} direction="row" flexWrap="wrap" useFlexGap>
-                        {ruleStatus.userDeny && (
-                          <Chip label="用户拒绝" size="small" color="error" variant="filled" />
-                        )}
-                        {ruleStatus.userAllow && (
-                          <Tooltip title={ruleStatus.userAllowDisabled ? '被用户拒绝策略覆盖，此条目不生效' : ''}>
-                            <span>
-                              <Chip
-                                label="用户允许"
-                                size="small"
-                                variant={ruleStatus.userAllowDisabled ? 'outlined' : 'filled'}
-                                sx={{
-                                  textDecoration: ruleStatus.userAllowDisabled ? 'line-through' : 'none',
-                                  opacity: ruleStatus.userAllowDisabled ? 0.5 : 1,
-                                  backgroundColor: ruleStatus.userAllowDisabled ? 'transparent' : '#FFD700',
-                                  color: ruleStatus.userAllowDisabled ? '#999' : '#000',
-                                }}
-                              />
-                            </span>
-                          </Tooltip>
-                        )}
-                        {ruleStatus.groupDeny && (
-                          <Tooltip title={ruleStatus.groupDisabled ? '被用户规则覆盖，此条目不生效' : ''}>
-                            <span>
-                              <Chip
-                                label="组拒绝"
-                                size="small"
-                                color="error"
-                                variant={ruleStatus.groupDisabled ? 'outlined' : 'filled'}
-                                sx={{
-                                  textDecoration: ruleStatus.groupDisabled ? 'line-through' : 'none',
-                                  opacity: ruleStatus.groupDisabled ? 0.5 : 1,
-                                }}
-                              />
-                            </span>
-                          </Tooltip>
-                        )}
-                        {ruleStatus.groupAllow && (
-                          <Tooltip title={ruleStatus.groupDisabled ? '被用户规则覆盖，此条目不生效' : ruleStatus.groupAllowDisabledByGroupDeny ? '被组拒绝规则覆盖，此条目不生效' : ''}>
-                            <span>
-                              <Chip
-                                label="组允许"
-                                size="small"
-                                color="info"
-                                variant={ruleStatus.groupDisabled || ruleStatus.groupAllowDisabledByGroupDeny ? 'outlined' : 'filled'}
-                                sx={{
-                                  textDecoration: ruleStatus.groupDisabled || ruleStatus.groupAllowDisabledByGroupDeny ? 'line-through' : 'none',
-                                  opacity: ruleStatus.groupDisabled || ruleStatus.groupAllowDisabledByGroupDeny ? 0.5 : 1,
-                                }}
-                              />
-                            </span>
-                          </Tooltip>
-                        )}
-                      </Stack>
+                      {renderRuleChips(ruleStatus)}
                     </TableCell>
                     <TableCell sx={{ paddingTop: 0.5, paddingBottom: 0.5 }}>
                       {renderAclCell(server)}
@@ -673,7 +720,12 @@ const Users = () => {
         </Alert>
       )}
 
-      <Stack direction="row" spacing={2} sx={{ marginBottom: 2 }}>
+      <Stack
+        direction={isMobile ? 'column' : 'row'}
+        spacing={2}
+        alignItems={isMobile ? 'stretch' : 'center'}
+        sx={{ marginBottom: 2, flexWrap: 'wrap', gap: 1 }}
+      >
         <TextField
           placeholder="搜索用户名"
           size="small"
@@ -684,7 +736,7 @@ const Users = () => {
               handleSearch();
             }
           }}
-          sx={{ minWidth: 200 }}
+          sx={{ minWidth: isMobile ? 0 : 200 }}
         />
         <Button
           variant="contained"
@@ -736,8 +788,104 @@ const Users = () => {
 
       
 
-      {/* 表格内容 - 使用 useMemo 缓存，只在用户列表改变时重新渲染 */}
+      {/* 表格内容：窄屏用卡片，宽屏用表格 */}
       {useMemo(() => (
+        isMobile ? (
+          <Box sx={{ marginBottom: 2 }}>
+            <Stack direction="row" alignItems="center" spacing={1} sx={{ marginBottom: 1 }}>
+              <Checkbox
+                size="small"
+                indeterminate={selectedUserIds.length > 0 && selectedUserIds.length < users.length}
+                checked={users.length > 0 && selectedUserIds.length === users.length}
+                onChange={(e) => handleSelectAllUsers(e.target.checked)}
+              />
+              <Typography variant="body2" color="text.secondary">全选</Typography>
+              {selectedUserIds.length > 0 && (
+                <Typography variant="body2" color="text.secondary">已选 {selectedUserIds.length}</Typography>
+              )}
+            </Stack>
+            {users.length > 0 ? (
+              users.map((user) => (
+                <Card key={user.id} variant="outlined" sx={{ marginBottom: 1.5 }}>
+                  <CardContent sx={{ padding: 1.5, '&:last-child': { paddingBottom: 1.5 } }}>
+                    <Stack direction="row" alignItems="center" spacing={1}>
+                      <Checkbox
+                        size="small"
+                        checked={selectedUserIds.includes(user.id)}
+                        onChange={() => handleSelectUser(user.id)}
+                        sx={{ padding: 0.5 }}
+                      />
+                      <Typography variant="subtitle1" sx={{ fontWeight: 600, flex: 1, wordBreak: 'break-all' }}>
+                        {user.username}
+                      </Typography>
+                      <Chip
+                        size="small"
+                        label={user.mfa_type ? (user.mfa_type === 1 ? 'TOTP' : `类型${user.mfa_type}`) : '未启用'}
+                        color={user.mfa_type ? 'success' : 'default'}
+                        variant={user.mfa_type ? 'filled' : 'outlined'}
+                      />
+                    </Stack>
+                    <Stack spacing={0.5} sx={{ marginTop: 1 }}>
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 1 }}>
+                        <Typography variant="body2" color="text.secondary" sx={{ flexShrink: 0 }}>用户ID</Typography>
+                        <Typography variant="body2">{user.id}</Typography>
+                      </Box>
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 1 }}>
+                        <Typography variant="body2" color="text.secondary" sx={{ flexShrink: 0 }}>描述</Typography>
+                        <Box
+                          onClick={() => handleViewDescription(user)}
+                          sx={{
+                            cursor: 'pointer',
+                            color: user.description ? '#1976d2' : '#999',
+                            textDecoration: 'underline',
+                            textAlign: 'right',
+                            flex: 1,
+                            minWidth: 0,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {user.description || '-'}
+                        </Box>
+                      </Box>
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 1 }}>
+                        <Typography variant="body2" color="text.secondary" sx={{ flexShrink: 0 }}>限速</Typography>
+                        <Typography variant="body2" sx={{ textAlign: 'right' }}>{formatRateLimit(user)}</Typography>
+                      </Box>
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 1 }}>
+                        <Typography variant="body2" color="text.secondary" sx={{ flexShrink: 0 }}>流量(历史/当前)</Typography>
+                        <Box sx={{ textAlign: 'right' }}>
+                          <Typography variant="body2" sx={{ fontSize: '0.75rem' }}>
+                            ↑ {formatTraffic(user.upload_traffic || 0)} ({formatTraffic(user.connected_upload_traffic || 0)})
+                          </Typography>
+                          <Typography variant="body2" sx={{ fontSize: '0.75rem' }}>
+                            ↓ {formatTraffic(user.download_traffic || 0)} ({formatTraffic(user.connected_download_traffic || 0)})
+                          </Typography>
+                        </Box>
+                      </Box>
+                    </Stack>
+                    <Stack direction="row" spacing={1} sx={{ marginTop: 1.5, flexWrap: 'wrap', gap: 1 }}>
+                      <Button size="small" variant="outlined" startIcon={<VisibilityIcon />} onClick={() => handleOpenUserInfo(user)}>
+                        查看
+                      </Button>
+                      <Button size="small" variant="outlined" startIcon={<EditIcon />} onClick={() => handleEditUser(user)}>
+                        编辑
+                      </Button>
+                      <Button size="small" variant="outlined" color="error" startIcon={<DeleteForeverIcon />} onClick={() => handleResetTraffic(user)}>
+                        清除流量
+                      </Button>
+                    </Stack>
+                  </CardContent>
+                </Card>
+              ))
+            ) : (
+              <Paper variant="outlined" sx={{ padding: 3, textAlign: 'center' }}>
+                <Typography color="textSecondary">暂无用户</Typography>
+              </Paper>
+            )}
+          </Box>
+        ) : (
         <TableContainer component={Paper} sx={{ marginBottom: 2 }}>
           <Table>
             <TableHead sx={{ backgroundColor: '#f5f5f5' }}>
@@ -751,6 +899,7 @@ const Users = () => {
                 </TableCell>
                 <TableCell sx={{ fontWeight: 'bold' }}>用户ID</TableCell>
                 <TableCell sx={{ fontWeight: 'bold' }}>用户名</TableCell>
+                <TableCell sx={{ fontWeight: 'bold' }}>MFA</TableCell>
                 <TableCell sx={{ fontWeight: 'bold' }}>描述</TableCell>
                 <TableCell sx={{ fontWeight: 'bold' }}>限速</TableCell>
                 <TableCell sx={{ fontWeight: 'bold' }}>流量(历史/当前)</TableCell>
@@ -772,6 +921,14 @@ const Users = () => {
                     <TableCell sx={{paddingTop:0, paddingBottom:0}}>{user.id}</TableCell>
                     <TableCell sx={{paddingTop:0, paddingBottom:0}}>{user.username}</TableCell>
                     <TableCell sx={{paddingTop:0, paddingBottom:0}}>
+                      <Chip
+                        size="small"
+                        label={user.mfa_type ? (user.mfa_type === 1 ? 'TOTP' : `类型${user.mfa_type}`) : '未启用'}
+                        color={user.mfa_type ? 'success' : 'default'}
+                        variant={user.mfa_type ? 'filled' : 'outlined'}
+                      />
+                    </TableCell>
+                    <TableCell sx={{paddingTop:0, paddingBottom:0}}>
                       <Tooltip title={user.description || '无描述'}>
                         <Box
                           onClick={() => handleViewDescription(user)}
@@ -779,9 +936,13 @@ const Users = () => {
                             cursor: 'pointer',
                             color: user.description ? '#1976d2' : '#999',
                             textDecoration: 'underline',
+                            maxWidth: '200px',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
                           }}
                         >
-                          {truncateText(user.description, 50) || '-'}
+                          {user.description || '-'}
                         </Box>
                       </Tooltip>
                     </TableCell>
@@ -833,7 +994,7 @@ const Users = () => {
                 ))
               ) : (
                 <TableRow>
-                  <TableCell colSpan={8} align="center" >
+                  <TableCell colSpan={9} align="center" >
                     暂无用户
                   </TableCell>
                 </TableRow>
@@ -841,7 +1002,8 @@ const Users = () => {
             </TableBody>
           </Table>
         </TableContainer>
-      ), [users, selectedUserIds, handleSelectUser, handleSelectAllUsers])}
+        )
+      ), [users, selectedUserIds, handleSelectUser, handleSelectAllUsers, isMobile])}
 
 
       <Stack direction="row" spacing={2} alignItems="center"  sx={{ marginBottom: 3}}>
@@ -1049,6 +1211,32 @@ const Users = () => {
               onChange={(e) => setEditingUser({ ...editingUser, description: e.target.value })}
             />
             <RateLimitFields value={editingUser} onChange={setEditingUser} />
+            <Box sx={{ borderTop: '1px solid #eee', paddingTop: 1 }}>
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={editingUser.mfa_type === 1}
+                    onChange={(e) => setEditingUser({ ...editingUser, mfa_type: e.target.checked ? 1 : 0 })}
+                  />
+                }
+                label="启用 MFA 双因素认证（TOTP）"
+              />
+              <Typography variant="body2" color="text.secondary">
+                启用后，VPN 认证通过不会立即放行网络，用户需在客户端自助页面输入动态验证码后才放行。
+              </Typography>
+              {editingUser.mfa_type === 1 && (
+                <FormControlLabel
+                  sx={{ marginTop: 1 }}
+                  control={
+                    <Checkbox
+                      checked={!!editingUser.mfa_regenerate}
+                      onChange={(e) => setEditingUser({ ...editingUser, mfa_regenerate: e.target.checked })}
+                    />
+                  }
+                  label="重新生成密钥（换绑认证器，原密钥立即失效）"
+                />
+              )}
+            </Box>
           </Stack>
         </DialogContent>
         <DialogActions>
@@ -1056,6 +1244,29 @@ const Users = () => {
           <Button onClick={handleUpdateUser} variant="contained" disabled={isLoading}>
             更新
           </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* MFA 认证数据展示对话框（启用/重置 MFA 后） */}
+      <Dialog open={!!mfaSecretInfo} onClose={() => setMfaSecretInfo(null)} maxWidth="sm" fullWidth fullScreen={isMobile}>
+        <DialogTitle>MFA 密钥 - {mfaSecretInfo?.username}</DialogTitle>
+        <DialogContent sx={{ paddingTop: 2 }}>
+          <Alert severity="warning" sx={{ marginBottom: 2 }}>
+            请立即将下方密钥添加到认证器 App（Google Authenticator、Microsoft Authenticator 等），关闭后不再显示。
+          </Alert>
+          {mfaSecretInfo?.qr && (
+            <Box sx={{ textAlign: 'center', marginBottom: 2 }}>
+              <img src={mfaSecretInfo.qr} alt="MFA 二维码" style={{ width: 200, height: 200 }} />
+              <Typography variant="body2" color="text.secondary">用认证器 App 扫描二维码</Typography>
+            </Box>
+          )}
+          <Typography variant="body2" color="text.secondary" sx={{ marginBottom: 0.5 }}>密钥（Base32，可手动录入）</Typography>
+          <TextField fullWidth value={mfaSecretInfo?.secret || ''} InputProps={{ readOnly: true }} sx={{ marginBottom: 2 }} />
+          <Typography variant="body2" color="text.secondary" sx={{ marginBottom: 0.5 }}>otpauth 链接（可手动添加）</Typography>
+          <TextField fullWidth multiline value={mfaSecretInfo?.uri || ''} InputProps={{ readOnly: true }} />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setMfaSecretInfo(null)} variant="contained">我已保存</Button>
         </DialogActions>
       </Dialog>
 
@@ -1117,6 +1328,21 @@ const Users = () => {
               {userInfoTabValue === 0 && (
                 <Box sx={{ marginTop: 2 }}>
                   {userGroups.length > 0 ? (
+                    isMobile ? (
+                      userGroups.map((group) => (
+                        <Card key={group.ID} variant="outlined" sx={{ marginBottom: 1.5 }}>
+                          <CardContent sx={{ padding: 1.5, '&:last-child': { paddingBottom: 1.5 } }}>
+                            <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+                              <Typography variant="subtitle1" sx={{ fontWeight: 600, wordBreak: 'break-all' }}>{group.name}</Typography>
+                              <Typography variant="caption" color="text.secondary">ID {group.ID}</Typography>
+                            </Stack>
+                            <Typography variant="body2" color="text.secondary" sx={{ marginTop: 0.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {group.description || '-'}
+                            </Typography>
+                          </CardContent>
+                        </Card>
+                      ))
+                    ) : (
                     <TableContainer component={Paper}>
                       <Table size="small">
                         <TableHead sx={{ backgroundColor: '#f5f5f5' }}>
@@ -1137,6 +1363,7 @@ const Users = () => {
                         </TableBody>
                       </Table>
                     </TableContainer>
+                    )
                   ) : (
                     <Typography sx={{ paddingTop: 2 }}>用户未加入任何用户组</Typography>
                   )}

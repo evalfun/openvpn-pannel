@@ -113,6 +113,29 @@ func (um *DaoManager) RemoveUserFromGroup(userID, groupID uint) error {
 	return um.DB.Where("user_id = ? AND group_id = ?", userID, groupID).Delete(&models.UserGroup{}).Error
 }
 
+// BatchRemoveUsersFromGroup 批量把用户从用户组移除。组内不存在的用户会被忽略（幂等）。
+func (um *DaoManager) BatchRemoveUsersFromGroup(userNameList []string, groupName string) error {
+	if len(userNameList) == 0 {
+		return fmt.Errorf("用户列表为空")
+	}
+	var groupModel *models.Group
+	if err := um.DB.Where("name = ?", groupName).First(&groupModel).Error; err != nil {
+		return err
+	}
+	var userModelList []*models.User
+	if err := um.DB.Where("username IN ?", userNameList).Find(&userModelList).Error; err != nil {
+		return err
+	}
+	if len(userModelList) == 0 {
+		return nil
+	}
+	userIDList := make([]uint, 0, len(userModelList))
+	for _, u := range userModelList {
+		userIDList = append(userIDList, u.ID)
+	}
+	return um.DB.Where("user_id IN ? AND group_id = ?", userIDList, groupModel.ID).Delete(&models.UserGroup{}).Error
+}
+
 func (um *DaoManager) GetGroupByID(groupID uint) (*models.Group, error) {
 	var group models.Group
 	err := um.DB.First(&group, groupID).Error
