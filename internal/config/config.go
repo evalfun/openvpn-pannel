@@ -28,6 +28,21 @@ type Config struct {
 	// 以避免脚本资源被随意改写带来的安全隐患。需要在线编辑资源时必须在 config.json 中
 	// 显式设置 "allow_edit_resource": true。
 	AllowEditResource bool `json:"allow_edit_resource"`
+	// StopInstancesOnExit 面板进程退出（SIGINT/SIGTERM）前是否停止所有 OpenVPN 实例。
+	// 未配置（nil）时默认 true，保持旧版本行为：退出前停止所有实例。
+	// 显式设为 false 时：退出/崩溃都不再停止实例，实例脱离面板成为孤儿进程继续运行，
+	// 由 systemd 等托管进程回收；面板（重新）启动时会依据数据库中的进程记录重新接管
+	// 这些仍在运行的实例，从而做到面板重启期间客户端无感知。
+	StopInstancesOnExit *bool `json:"stop_instances_on_exit"`
+	// TrustedProxies 为反向代理服务器 IP/CIDR 白名单（如 ["127.0.0.1","10.0.0.0/8"]）。
+	// 只有来自这些地址的请求，其 X-Forwarded-For / X-Real-IP 才会被采信为客户端真实 IP；
+	// 未配置（空）时禁用代理信任，客户端 IP 一律取 TCP 来源地址，防止伪造来源。
+	TrustedProxies []string `json:"trusted_proxies"`
+}
+
+// ShouldStopInstancesOnExit 返回面板退出前是否应停止所有实例。未配置时默认 true。
+func (c *Config) ShouldStopInstancesOnExit() bool {
+	return c.StopInstancesOnExit == nil || *c.StopInstancesOnExit
 }
 
 func ReadConfig(path string) (*Config, error) {

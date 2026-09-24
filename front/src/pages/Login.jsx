@@ -80,13 +80,18 @@ const Login = () => {
         setIsLoading(false);
       }
     } catch (err) {
-      const code = err.response?.data?.error;
+      const data = err.response?.data || {};
+      const code = data.error;
       if (code === 'mfa_invalid') {
         // 验证码错误：重新打开弹框并提示
         setMfaError('动态验证码错误或已过期，请重试');
         setOpenMfaDialog(true);
+      } else if (code === 'mfa_cooldown') {
+        // 验证码尝试过于频繁：保持弹框打开并提示剩余冷却时间
+        setMfaError(data.message || '验证码尝试过于频繁，请稍后再试');
+        setOpenMfaDialog(true);
       } else {
-        setError('登录失败：' + (err.response?.data?.error || '用户名或密码错误'));
+        setError('登录失败：' + (data.message || data.error || '用户名或密码错误'));
       }
       setIsLoading(false);
     }

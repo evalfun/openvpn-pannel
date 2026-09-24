@@ -34,9 +34,12 @@ type App struct {
 	lock              sync.RWMutex
 	internalAPIRouter *gin.Engine
 	buildDate         string
+	// loginCooldown 对每个用户的登录密码与 MFA 验证码尝试做最小间隔限制，防暴力破解。
+	loginCooldown *cooldownLimiter
 }
 
 func (a *App) Run() {
+	a.RecoverRunningServers()
 	a.AutoStartOpenVPNServer()
 	go a.internalAPIRouter.Run(a.cfg.InternalAPIListen)
 	// 面向已连接 VPN 客户端的自助页面（额外端口），未配置则不启用。
@@ -48,10 +51,30 @@ func (a *App) Run() {
 			}
 		}()
 	}
-	go a.StartConnectedClientInfoUpdater(60 * time.Second)
+	go a.StartConnectedClientInfoUpdater(12 * time.Second)
 	go a.StartLogRotationTask(60 * time.Second)
 	go a.StartServerKeepAliveTask(60 * time.Second)
 	a.router.Run(a.cfg.Listen)
+}
+
+// setupTrustedProxies 配置 gin 信任的反向代理来源。
+//
+// 只有请求来自受信任代理时，gin 才会把 X-Forwarded-For / X-Real-IP 当作客户端真实 IP；
+// 否则客户端可随意伪造这些头，导致日志/审计记录到虚假来源 IP。
+// config.trusted_proxies 为空时禁用所有代理信任，ClientIP 直接取 TCP 来源地址。
+func (a *App) setupTrustedProxies() {
+	proxies := a.cfg.TrustedProxies
+	if len(proxies) == 0 {
+		_ = a.router.SetTrustedProxies(nil)
+		_ = a.internalAPIRouter.SetTrustedProxies(nil)
+		return
+	}
+	if err := a.router.SetTrustedProxies(proxies); err != nil {
+		log.Printf("配置面板可信代理失败: %v", err)
+	}
+	if err := a.internalAPIRouter.SetTrustedProxies(proxies); err != nil {
+		log.Printf("配置内部 API 可信代理失败: %v", err)
+	}
 }
 
 // getProcessLock 返回指定服务器实例的读写锁；不存在时创建。
@@ -148,6 +171,68 @@ func (a *App) checkAndRestartServers() {
 		}
 		log.Printf("保活检查: 服务器 %d (%s) 的 openvpn 进程已退出，正在重新拉起", serverID, serverModel.Name)
 		a.startServerLocked(serverModel, "keepalive")
+	}
+}
+
+// recordServerProcess 在“退出时不停止实例”（stop_instances_on_exit=false）模式下，
+// 把实例 PID 记入数据库，供面板重启后重新接管。其它模式下不写记录。
+func (a *App) recordServerProcess(serverID uint, pid int) {
+	if a.cfg.ShouldStopInstancesOnExit() {
+		return
+	}
+	if err := a.daoManager.SaveServerProcess(serverID, pid); err != nil {
+		log.Printf("记录服务器 %d 进程 PID 失败: %v", serverID, err)
+	}
+}
+
+// RecoverRunningServers 面板启动时，依据数据库中的进程 PID 记录重新接管仍在运行的
+// OpenVPN 实例。仅在 config.stop_instances_on_exit=false（退出时不停止实例）时启用；
+// 否则说明退出时实例会被停止，残留记录已无意义，直接清理。
+//
+// 必须在 AutoStartOpenVPNServer 之前调用：被接管的实例在进程列表中已处于“运行中”，
+// 自启动逻辑会将其识别为无需重复启动。
+func (a *App) RecoverRunningServers() {
+	if a.cfg.ShouldStopInstancesOnExit() {
+		if err := a.daoManager.DeleteAllServerProcess(); err != nil {
+			log.Printf("清理进程 PID 记录失败: %v", err)
+		}
+		return
+	}
+	records, err := a.daoManager.ListServerProcessRecords()
+	if err != nil {
+		log.Printf("列出进程 PID 记录失败: %v", err)
+		return
+	}
+	if len(records) == 0 {
+		return
+	}
+	resourceMap := a.PrepareResourceMap([]string{ovpnserver.RESOURCE_ID_MISC_CONFIG})
+	miscConfig, err := ovpnserver.ParseMiscConfig(resourceMap)
+	if err != nil {
+		log.Printf("接管运行中实例失败: 解析杂项配置失败: %v", err)
+		return
+	}
+	for _, record := range records {
+		if !ovpnserver.ProcessAlive(record.PID) {
+			// 进程已不在，删除记录；若服务器配置了自启动，随后会被正常拉起。
+			_ = a.daoManager.DeleteServerProcess(record.ServerID)
+			continue
+		}
+		serverModel, err := a.daoManager.GetOpenVPNServerByID(record.ServerID)
+		if err != nil {
+			log.Printf("接管运行中实例失败: 服务器 %d 已不存在，删除记录", record.ServerID)
+			_ = a.daoManager.DeleteServerProcess(record.ServerID)
+			continue
+		}
+		serverInstance := ovpnserver.NewOpenVPNServerInstance(
+			a.resolvedServerModel(serverModel), nil, nil,
+			fmt.Sprintf("%s/%d", a.cfg.WorkingDir, serverModel.ID),
+			a.cfg.InternalAPIListen, miscConfig.OpenVPNPath)
+		serverInstance.AttachPID(record.PID)
+		a.lock.Lock()
+		a.ovpnProcessList[serverModel.ID] = serverInstance
+		a.lock.Unlock()
+		log.Printf("已接管运行中的 OpenVPN 实例 server %d (%s) PID: %d", serverModel.ID, serverModel.Name, record.PID)
 	}
 }
 
@@ -330,6 +415,7 @@ func NewApp(cfg *config.Config, buildDate string) *App {
 		ovpnProcessList: make(map[uint]*ovpnserver.OpenVPNServerInstance),
 		ovpnProcessLock: make(map[uint]*sync.RWMutex),
 		buildDate:       buildDate,
+		loginCooldown:   newCooldownLimiter(loginCooldownInterval),
 	}
 	var err error
 	app.daoManager, err = dao.NewDaoManager(cfg)
@@ -338,6 +424,7 @@ func NewApp(cfg *config.Config, buildDate string) *App {
 	}
 	app.router = gin.Default()
 	app.internalAPIRouter = gin.Default()
+	app.setupTrustedProxies()
 	app.SetupInternalAPIRoutes()
 	app.setupRoutes()
 	app.setupStaticFiles()

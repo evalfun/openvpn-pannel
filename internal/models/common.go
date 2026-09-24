@@ -30,7 +30,7 @@ func MigrateDB(db *gorm.DB) error {
 	err := db.AutoMigrate(&Server{}, &ServerRoute{}, &ConnectedClientInfoRecord{},
 		&ClientConfig{}, &User{}, &Group{}, &UserGroup{}, &AddedServerACLRecord{},
 		&GroupACL{}, &ServerPermission{}, &AppResourceRecord{}, &ServerEvent{}, &Certificate{}, &CertificateEvent{},
-		&RateLimitPlan{}, &RateLimitRule{})
+		&RateLimitPlan{}, &RateLimitRule{}, &ServerProcessRecord{})
 	if err != nil {
 		return err
 	}

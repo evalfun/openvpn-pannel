@@ -5,8 +5,7 @@ import (
 	"fmt"
 	"openvpn-pannel/internal/config"
 	"openvpn-pannel/internal/models"
-
-	"crypto/sha256"
+	"openvpn-pannel/internal/passwd"
 
 	"gorm.io/gorm"
 )
@@ -26,14 +25,16 @@ func NewDaoManager(cfg *config.Config) (*DaoManager, error) {
 }
 func (um *DaoManager) CreateUser(username, password, description string, rateLimitType uint, uploadLimitKB, downloadLimitKB uint64) error {
 
-	hash := sha256.Sum256([]byte(password + um.cfg.PasswordSalt))
-	hashed_passwd := fmt.Sprintf("%x", hash)
+	hashedPasswd, err := passwd.Hash(password)
+	if err != nil {
+		return fmt.Errorf("密码哈希失败: %s", err.Error())
+	}
 
 	// RateLimitType 在模型上带 default:1（用于老数据迁移回填）。gorm 默认会忽略零值字段，
 	// 导致显式选择的“不设置限速策略”(0) 被写成默认值 1。这里用 map 插入，保证 0 也能写入。
 	record := map[string]interface{}{
 		"username":          username,
-		"password":          string(hashed_passwd),
+		"password":          hashedPasswd,
 		"description":       description,
 		"rate_limit_type":   rateLimitType,
 		"upload_limit_kb":   uploadLimitKB,
@@ -64,8 +65,10 @@ func (um *DaoManager) CreateUserWithGroup(username, password, description, group
 		group = g
 	}
 
-	hash := sha256.Sum256([]byte(password + um.cfg.PasswordSalt))
-	hashedPasswd := fmt.Sprintf("%x", hash)
+	hashedPasswd, err := passwd.Hash(password)
+	if err != nil {
+		return fmt.Errorf("密码哈希失败: %s", err.Error())
+	}
 
 	tx := um.DB.Begin()
 	if tx.Error != nil {
@@ -107,9 +110,17 @@ func (um *DaoManager) AuthUser(username, password string) (*models.User, error) 
 	if err != nil {
 		return nil, err
 	}
-	hash := sha256.Sum256([]byte(password + um.cfg.PasswordSalt))
-	hashed_passwd := fmt.Sprintf("%x", hash)
-	if user.Password != string(hashed_passwd) {
+	authenticated := false
+	if passwd.IsBcrypt(user.Password) {
+		authenticated = passwd.VerifyBcrypt(user.Password, password)
+	} else if passwd.VerifyLegacySHA256(user.Password, password, um.cfg.PasswordSalt) {
+		// 旧版 sha256(password+盐) 校验通过：透明升级为 bcrypt，升级失败不影响本次登录。
+		authenticated = true
+		if upgraded, herr := passwd.Hash(password); herr == nil {
+			um.DB.Model(&models.User{}).Where("id = ?", user.ID).Update("password", upgraded)
+		}
+	}
+	if !authenticated {
 		return nil, fmt.Errorf("authentication failed")
 	}
 	return &user, nil
@@ -173,9 +184,11 @@ func (um *DaoManager) UpdateUserInfo(userID uint, description, password string, 
 	user.UploadLimitKB = uploadLimitKB
 	user.DownloadLimitKB = downloadLimitKB
 	if password != "" {
-		hash := sha256.Sum256([]byte(password + um.cfg.PasswordSalt))
-		hashed_passwd := fmt.Sprintf("%x", hash)
-		user.Password = string(hashed_passwd)
+		hashedPasswd, err := passwd.Hash(password)
+		if err != nil {
+			return fmt.Errorf("密码哈希失败: %s", err.Error())
+		}
+		user.Password = hashedPasswd
 	}
 	return um.DB.Save(&user).Error
 }

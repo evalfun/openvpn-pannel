@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"openvpn-pannel/internal/models"
 	"openvpn-pannel/internal/totp"
 	"strconv"
@@ -53,6 +54,24 @@ func (a *App) UserLoginHandler(c *gin.Context) {
 		c.JSON(400, gin.H{
 			"result": "failed",
 			"error":  err.Error(),
+		})
+		return
+	}
+	// 防暴力破解：同一用户 2 秒内只允许一次尝试。密码校验与动态验证码使用相互独立的
+	// 冷却键，避免“密码通过后紧接着提交验证码”的两步登录互相阻塞。
+	cooldownKey := "login:" + param.Username
+	errorCode := "too_many_requests"
+	if param.MFACode != "" {
+		cooldownKey = "mfa:" + param.Username
+		errorCode = "mfa_cooldown"
+	}
+	if ok, remain := a.loginCooldown.Allow(cooldownKey); !ok {
+		secs := retryAfterSeconds(remain)
+		c.JSON(429, gin.H{
+			"result":      "failed",
+			"error":       errorCode,
+			"retry_after": secs,
+			"message":     fmt.Sprintf("尝试过于频繁，请 %d 秒后再试", secs),
 		})
 		return
 	}

@@ -2,6 +2,7 @@ package ovpnserver
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"syscall"
 	"testing"
@@ -68,4 +69,36 @@ func TestKilledProcessIsNotRunning(t *testing.T) {
 	if ins.KeepAlive() {
 		t.Fatal("KeepAlive should be false after Stop")
 	}
+}
+
+// TestProcessAlive 验证 ProcessAlive 对存活/不存在/僵尸进程的判定。
+func TestProcessAlive(t *testing.T) {
+	if ProcessAlive(-1) || ProcessAlive(0) {
+		t.Fatal("invalid PID should not be alive")
+	}
+	// 当前进程自身必然存活。
+	if !ProcessAlive(os.Getpid()) {
+		t.Fatal("current process should be alive")
+	}
+	// 不存在的 PID。
+	if ProcessAlive(2147480000) {
+		t.Fatal("non-existent PID should not be alive")
+	}
+
+	// 僵尸进程：kill 后不回收，ProcessAlive 必须返回 false。
+	cmd := exec.Command("sleep", "600")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	pid := cmd.Process.Pid
+	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+		t.Fatalf("kill: %v", err)
+	}
+	waitUntil(t, 5*time.Second, "process to become zombie", func() bool {
+		return processIsZombie(pid)
+	})
+	if ProcessAlive(pid) {
+		t.Fatal("zombie process should not be reported as alive")
+	}
+	cmd.Wait()
 }

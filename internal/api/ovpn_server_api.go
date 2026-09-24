@@ -336,6 +336,7 @@ func (a *App) DeleteOpenVPNServerHandler(c *gin.Context, user *models.User) {
 	// 从进程列表移除，避免残留已删除服务器的实例与锁
 	delete(a.ovpnProcessList, param.ID)
 	a.removeProcessLock(param.ID)
+	a.daoManager.DeleteServerProcess(param.ID)
 	workdir := path.Join(a.cfg.WorkingDir, fmt.Sprintf("%d", param.ID))
 	os.RemoveAll(workdir)
 	c.JSON(200, gin.H{
@@ -725,6 +726,7 @@ func (a *App) StartOpenVPNServerInstanceHandler(c *gin.Context, user *models.Use
 		return
 	}
 	a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_START_SUCCESS, requestIP, "服务器启动成功 操作用户="+user.Username)
+	a.recordServerProcess(serverModel.ID, serverInstance.GetPID())
 	a.daoManager.DeleteAddedACLByServerID(serverModel.ID)
 	a.daoManager.DeleteConnectedClientInfoRecordByServerID(serverModel.ID)
 	c.JSON(200, gin.H{
@@ -784,6 +786,7 @@ func (a *App) StopOpenVPNServerInstanceHandler(c *gin.Context, user *models.User
 			"error":  nil,
 		})
 		a.daoManager.DeleteAddedACLByServerID(param.ID)
+		a.daoManager.DeleteServerProcess(param.ID)
 		a.daoManager.CreateEvent(param.ID, models.SERVER_EVENT_TYPE_SERVER_EXIT_SUCCESS, requestIP, "服务器停止成功 操作用户="+user.Username)
 		return
 	}
@@ -1200,6 +1203,7 @@ func (a *App) StopAllOpenVPNServer() {
 			} else {
 				a.daoManager.DeleteAddedACLByServerID(serverInstance.GetServerModel().ID)
 				a.daoManager.DeleteConnectedClientInfoRecordByServerID(serverInstance.GetServerModel().ID)
+				a.daoManager.DeleteServerProcess(serverInstance.GetServerModel().ID)
 				a.daoManager.CreateEvent(serverInstance.GetServerModel().ID, models.SERVER_EVENT_TYPE_SERVER_EXIT_SUCCESS, "internal", "服务器停止成功")
 
 			}
@@ -1284,6 +1288,8 @@ func (a *App) startServerLocked(serverModel *models.Server, source string) {
 		return
 	}
 	a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_START_SUCCESS, source, "服务器启动成功")
+	// 退出时不停止实例的场景：把 PID 记入数据库，供面板重启后重新接管。
+	a.recordServerProcess(serverModel.ID, serverInstance.GetPID())
 	// 看门狗（keepalive）拉起：说明服务器此前异常退出，额外记录一条“已恢复”事件。
 	if source == "keepalive" {
 		a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_RECOVERED, source, "服务器异常退出后已被看门狗自动拉起，服务器已恢复")

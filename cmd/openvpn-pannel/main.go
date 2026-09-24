@@ -57,11 +57,19 @@ func main() {
 			MysqlUser:         "your_mysql_user",
 			MysqlPass:         "your_mysql_password",
 			MysqlDB:           "your_database_name",
-			PasswordSalt:      "g8w47diqwhduwgf",
+			PasswordSalt:      "A)$&!^%(Random-String-4312cdab",
 			SessionSecret:     "secret-key-32-byte-long-00001111",
 			InternalAPIListen: "127.0.0.1:59003",
-			ClientPageListen:  "10.8.0.1:8088",
+			ClientPageListen:  "0.0.0.0:8088",
+			MaxLogSizeKB:      16384,
+			WorkingDir:        "/tmp/openvpn-pannel",
+			SQLiteDB:          "data.db",
 			AllowEditResource: false,
+			StopInstancesOnExit: func() *bool {
+				v := true
+				return &v
+			}(),
+			TrustedProxies: []string{"127.0.0.1"},
 		}
 		data, err := json.MarshalIndent(demoConfig, "", "  ")
 		if err != nil {
@@ -102,8 +110,12 @@ func main() {
 			c := make(chan os.Signal, 1)
 			signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 			<-c
-			log.Println("开始关闭所有服务器实例")
-			a.StopAllOpenVPNServer()
+			if cfg.ShouldStopInstancesOnExit() {
+				log.Println("开始关闭所有服务器实例")
+				a.StopAllOpenVPNServer()
+			} else {
+				log.Println("面板退出，保留所有 OpenVPN 实例进程，等待面板重启后重新接管")
+			}
 			os.Exit(0)
 		}()
 		a.Run()

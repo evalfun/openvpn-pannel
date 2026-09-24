@@ -1,81 +1,100 @@
 # OpenVPN 面板
 
-一个自托管的 OpenVPN 管理面板。统一管理 **用户**、**用户组** 与 **OpenVPN 服务器实例**，并通过
-`iptables` / `ipset` 做访问控制、通过 `tc` 做带宽限速。面板负责“编排”，真正的连接与转发交给 OpenVPN。
+一个自托管的 OpenVPN 管理面板：统一管理 **用户**、**用户组** 与 **OpenVPN 服务器**，
+提供访问控制、带宽限速、证书管理与审计日志。单二进制、前端内嵌，开箱即用。
 
-- 用户 / 用户组 / 服务器 / 证书 / 资源 / 日志，一站式 Web 管理
-- 达量限速：按周期统计流量，超出阈值自动降速，超额禁止连接并踢下线（防止滥用）
-- 基于用户组与用户权限的精细化访问控制（ACL）
-- 客户端上线自动下发 ACL（优先 `ipset` 聚合，缺失时回落逐条 `iptables`）
-- 客户端上线自动 `tc` 限速，支持按用户组或固定带宽，区分上传/下载
-- 内置证书管理：用 Go 生成/签发 CA、服务器与客户端证书，支持导入与引用
+## 功能特性
+
+**用户与权限**
+- 用户 / 用户组管理：批量创建（CSV 导入）、搜索分页、备注
+- 精细访问控制（ACL）：用 CIDR 声明可访问网段，客户端上线自动下发、下线自动回收；
+  安装 `ipset` 时聚合下发，规则数不随在线人数增长
+
+**服务器管理**
+- 多 OpenVPN 实例统一管理：端口、协议、网段、路由、客户端配置集中维护，支持开机自启动
+- 进程保活看门狗：实例异常退出自动拉起，并记录“服务器已恢复”事件
+
+**带宽与流量**
+- 带宽限速：区分上传/下载，支持“活跃用户组最低/最高速率”与固定速率，可配各用户/用户组
+- 达量限速：按周期统计流量，超出阈值自动降速，超额禁止连接并踢下线
+- 流量统计：实时查看在线客户端及其已用流量
+
+**证书**
+- 内置 CA 与证书管理：生成 / 签发 / 导入 / 引用，支持 RSA 与 ECDSA，无需 openssl
 - 一键导出客户端 `.ovpn`（内联证书密钥），服务器地址与端口按实例记忆
-- 服务器日志按容量自动轮换，内置事件审计
-- 单个二进制，前端资源内嵌，支持 MySQL 或 SQLite
 
-## 工作方式
+**认证与安全**
+- 双因素认证（TOTP）：扫码或手动绑定，登录与动态验证码均有频率限制
+- 密码使用 bcrypt 存储，历史密码登录时自动升级；支持可信反向代理白名单
+- 客户端自助页面：查看连接信息、输入动态验证码放行网络
 
-```
-            ┌────────────┐   内部 API(仅本机)     ┌──────────────────┐
-  浏览器 ──▶│  面板 Web  │ ◀───────────────────▶│   认证/上下线脚本 │
-            └─────┬──────┘                       └──────┬───────────┘
-                  │ 管理/配置                            │
-                  ▼                                     ▼
-            ┌────────────┐                ┌──────────────────────────────┐
-            │  MySQL/    │                │ OpenVPN 实例 + 工作目录       │
-            │  SQLite    │                │ iptables/ipset nftables · tc │
-            └────────────┘                └──────────────────────────────┘
-```
+**审计与运维**
+- 事件审计：客户端上下线、认证成功/失败、ACL 变更、证书操作，并记录操作人
+- 服务器日志按容量自动轮换
+- 高可用：面板重启或崩溃时可不中断已连接的客户端（可选）
+- 单个二进制、前端内嵌，支持 MySQL / SQLite
 
-- 内部 API 只监听 `127.0.0.1`，供 OpenVPN 的认证、上线、下线脚本回调查询权限、ACL 与限速。
-- 每个服务器实例有独立工作目录 `working_dir/<服务器ID>/`（证书、`server.conf`、日志、脚本）。
+## 优势
+
+- **开箱即用**：单个二进制 + 一份配置文件即可运行，前端资源已内嵌，无需单独部署 Web 服务；
+  默认使用 SQLite，零外部数据库依赖。
+- **脚本可灵活配置**：认证、上下线、ACL、限速等逻辑全部由脚本资源驱动，可在面板内在线查看与替换；
+  仓库同时提供 `iptables` 与 `nftables` 两套脚本，按系统自由切换。
+- **运行环境要求低**：纯 Go 实现，证书由标准库生成，**无需 openssl**；可运行于 x86 / ARM，
+  兼容 OpenWrt、ImmortalWrt 等嵌入式系统。
+- **占用资源少**：单进程、内存占用低，适合路由器、VPS 等资源受限的环境。
+- **企业级防火墙体验**：用户/用户组级别的允许与拒绝策略、CIDR 粒度 ACL、实时限速与达量限速、
+  连接跟踪清理，配合完整的事件审计，管控粒度接近专业防火墙。
+
+## 依赖
+
+- **必需**：`openvpn`、`iptables`（或 `nftables`，见下）、`bash`（内置脚本使用 bash 语法，
+  由配置项 `shell_path` 指定，默认 `/bin/bash`；请勿改为 `sh`/`dash`，否则认证与 ACL 脚本会失效）。
+- **建议**：`ipset`（聚合 ACL，规则数与在线人数无关，性能更好）、`tc`（带宽限速）、
+  `conntrack`（启用 MFA 时登出后立即清理连接跟踪，缺失则自动跳过）。
+- **数据库**：SQLite（默认，需 CGO）或 MySQL。
+- 证书由 Go 标准库生成，**无需 openssl**。
+
+> 面板默认使用 `iptables` / `ipset` 脚本。若系统已不再提供 `iptables`（如较新的发行版或 OpenWrt），
+> 请改用仓库 [`nftables-scripts/`](nftables-scripts/) 下的纯 `nftables` 脚本：在面板「资源管理」中把
+> `client_online.sh`、`client_offline.sh`、`server_start.sh`、`server_exit.sh`、`acl_add.sh`、`acl_del.sh` 替换为对应目录下的同名文件；  
+> `generic/` 对应普通 Linux，`openwrt/` 对应 OpenWrt / ImmortalWrt。
 
 ## 快速开始
 
 ```bash
-# 1) 生成一份示例配置
+# 1) 生成示例配置并修改
 ./openvpn-pannel democonfig > config.json
 
-# 2) 修改config.json配置文件
-
-# 3) 初始化数据库（首次部署、或升级版本后执行）
+# 2) 初始化数据库（首次部署或升级后执行）
 ./openvpn-pannel -config=config.json migratedb
 
-# 4) 创建管理员用户：  用户名  密码  描述
-./openvpn-pannel -config=config.json createuser admin 'ADMIN_PASSWORD_111222333' 管理员
-
-# 5) 创建 admin 用户组（名称必须为 admin）
+# 3) 创建管理员并加入 admin 组
+./openvpn-pannel -config=config.json createuser admin 'ADMIN_PASSWORD' 管理员
 ./openvpn-pannel -config=config.json creategroup admin
-
-# 6) 把管理员加入 admin 组
 ./openvpn-pannel -config=config.json addusertogroup admin admin
 
-# 7) 启动面板
+# 4) 启动面板
 ./openvpn-pannel -config=config.json run
 ```
 
-浏览器访问 `http://<主机>:8081`，使用 `admin` 登录。服务器实例的证书与参数在“服务器管理”中配置。
+浏览器访问 `http://<主机>:8081`，使用 `admin` 登录。之后在“服务器管理”中配置
+服务器证书与参数即可。
 
-> 运行依赖：`openvpn`、`iptables`；建议安装 `ipset`（聚合访问控制，提升性能）与 `tc`（带宽限速）。
+> 其他命令：`run` / `migratedb` / `createuser` / `creategroup` / `addusertogroup` / `democonfig` / `version`。
 
-> 更多命令：`migratedb` / `run` / `createuser` / `creategroup` / `addusertogroup` / `democonfig` / `version`。
+### 开始使用
+
+1. 创建vpn用户
+2. 创建用户组，并给用户组设置ACL（vpn用户可以访问的网段）
+3. 将vpn用户加入用户组内
+4. 创建证书。依次创建CA证书，服务器证书，客户端证书。
+5. 创建VPN实例，选择刚才创建的证书，填写配置。给VPN实例加入用户组授权。
+6. 导出客户端配置文件，即可导入客户端连接到服务器。 
 
 ## 配置
 
-`config.json` 常用字段：
-
-| 字段 | 说明 |
-| --- | --- |
-| `listen` | 面板监听地址，如 `:8081` |
-| `sqlite_db` | SQLite 文件路径；**非空时优先使用 SQLite**，忽略 MySQL |
-| `mysql_addr` / `mysql_user` / `mysql_pass` / `mysql_db` | MySQL 连接信息 |
-| `passwd_salt` | 密码盐，随机字符串，**设定后不要更改** |
-| `session_secret` | 会话密钥，建议 32 字符随机串 |
-| `working_dir` | 工作目录绝对路径 |
-| `internal_api_listen` | 内部 API 地址，建议 `127.0.0.1:59003` |
-| `client_page_listen` | 客户端自助页面监听地址（如 `10.8.0.1:8088`），为空则不启用 |
-| `max_log_size_kb` | 单实例日志容量上限（KB），`<=0` 关闭轮换 |
-| `allow_edit_resource` | 是否允许在线编辑脚本资源，**默认 false** |
+`config.json` 的最小示例（完整字段说明见面板内 **帮助信息**）：
 
 ```json
 {
@@ -84,91 +103,21 @@
   "passwd_salt": "CHANGE_ME_random_string",
   "session_secret": "CHANGE_ME_32_byte_random_secret",
   "working_dir": "/opt/openvpn-pannel/workdir",
-  "internal_api_listen": "127.0.0.1:59003",
-  "client_page_listen": "10.8.0.1:8088",
-  "max_log_size_kb": 20480,
-  "allow_edit_resource": false
+  "internal_api_listen": "127.0.0.1:59003"
 }
 ```
 
-## 客户端自助页面与 MFA（TOTP）
-
-- 在 `config.json` 配置 `client_page_listen`（如 `10.8.0.1:8088`）后，面板会在该地址额外监听一个
-  只读页面，仅面向已连接的 VPN 客户端（按 HTTP 来源 IP 识别，非 VPN 客户端访问返回错误）。
-  页面展示：服务器名称、用户名称、证书名称、公网/内网 IP、可访问网络、已用流量、当前限速。
-- 在“用户管理 → 编辑”中可为用户启用 **TOTP（MFA）**，保存后显示密钥与 `otpauth://` 链接供绑定。
-- 启用后：VPN 认证通过但不下发任何 ACL；用户在自助页面输入 6 位动态验证码通过后才放行网络，
-  登出时回收。无头设备可用 `curl http://<页面地址>/login/<6位验证码>` 与 `curl http://<页面地址>/logout`。
-- 面板登录同样受 TOTP 保护：登录页在需要时会弹框要求补充动态验证码。
-
-## 权限与访问控制
-
-服务器权限分“用户权限”和“用户组权限”，各有允许/拒绝，优先级为：
-
-```
-用户拒绝 > 用户允许 > 组拒绝 > 组允许
-```
-
-未设置任何匹配规则时默认拒绝。登录后：
-
-- **用户级允许**：下发该用户**所有**所属组的 ACL（不再看组规则）；
-- **组级允许**：仅下发“服务器允许的组”与“用户所属组”的**交集** ACL；
-- 只有用户权限、没有任何组时，可登录但无 ACL，无法访问受控网络。
-
-用户组通过 ACL（`4`=IPv4 / `6`=IPv6 + CIDR，如 `10.0.0.0/24`）声明允许访问的网段，客户端上线时
-自动写入防火墙，下线回收。安装 `ipset` 时采用聚合模式，规则数与在线人数无关，性能更好。
-
-## 带宽限速
-
-客户端上线时按策略自动下发 `tc`：**上传**（服务器→客户端，出方向）与**下载**（客户端→服务器，入方向）
-分别控制，单位 KB/s，`0` 表示不限速。
-
-用户限速策略四选一，默认为“依据活跃用户组的最低速率”：
-
-| 策略 | 说明 |
-| --- | --- |
-| 不设置任何限速策略 | 完全不限速 |
-| 依据活跃用户组的最低速率（默认） | 活跃组限速取最低，忽略 `0` |
-| 依据活跃用户组的最高速率 | 活跃组限速取最高，任一为 `0` 则不限速 |
-| 固定限速 | 使用该用户自己的上传/下载值 |
-
-**活跃用户组** = 用户所属且被该服务器允许连接的组。用户组限速默认 `0`（不限速）。
-
-## nftables 脚本（可选，需自行替换）
-
-默认资源脚本基于 `iptables` / `ipset`。仓库 `nftables-scripts/` 目录额外提供了一套纯
-`nftables` 实现，**不会内嵌进二进制，也不会自动生效**，仅供需要 nftables 的用户自行替换：
-
-- `nftables-scripts/generic/`：普通 Linux（脚本内使用 `sudo`），对应二进制内嵌的默认资源；
-- `nftables-scripts/openwrt/`：OpenWrt / ImmortalWrt（不使用 `sudo`、使用绝对路径），对应 `doc-openwrt/`。
-
-替换方式：在面板「资源文件」中，把 `client_online.sh`、`client_offline.sh`、
-`server_start.sh`、`server_exit.sh` 分别替换为对应目录下的同名文件后重启服务。
-启用 TOTP（MFA）时，还需把 `acl_add.sh`、`acl_del.sh` 替换为对应目录下的同名文件。
-`ratelimit.sh`、`misc`、`auth.sh` 等不涉及防火墙，保持原样即可。
-
-> nftables 版本为每台服务器创建独立 `inet` 表 `openvpn_acl_<服务器ID>`，基础链
-> `forward` 使用 `priority -200`（早于 fw4 的默认 `filter` 链），由面板脚本直接 `drop`
-> 实现访问控制。因此在 OpenWrt 上使用时，请把 `openvpn` 防火墙区域的**转发策略设为
-> 允许**，真正的放行/拒绝由面板 ACL 完成（详见 `doc-openwrt/README.md`）。
-
-## 证书管理
-
-面板内置证书管理，证书与私钥由 Go 标准库生成，**不需要 openssl**（适合 OpenWrt 等无 openssl 的环境）。
-
-密钥类型支持 **RSA**（2048/3072/4096）与 **ECDSA**（P-256/P-384/P-521），创建时选择。
-
-服务器编辑处，CA 证书 / 服务器证书 / 服务器私钥既可**直接粘贴 PEM**，也可从证书管理**选择引用**；
-
-**客户端配置导出**：在“服务器管理”点“导出客户端配置”，即可下载内联 `<ca>/<cert>/<key>/<tls-auth>` 的单个 `.ovpn` 文件。
+使用 MySQL 时填写 `mysql_addr` / `mysql_user` / `mysql_pass` / `mysql_db` 并留空 `sqlite_db`。
 
 ## 部署
 
-以非 root 运行时，给 OpenVPN 授予网络管理能力，并在 `sudoers` 放行所需命令：
+以非 root 运行时，先给 OpenVPN 授予网络管理能力：
 
 ```bash
 sudo setcap cap_net_admin+ep /usr/sbin/openvpn
 ```
+
+并在 `sudoers`（如 `/etc/sudoers.d/openvpn-pannel`）放行面板所需的网络命令：
 
 ```sudoers
 username ALL=(ALL) NOPASSWD: /usr/sbin/iptables
@@ -198,29 +147,23 @@ ReadWritePaths=/opt/openvpn-pannel
 WantedBy=multi-user.target
 ```
 
+> 若希望面板重启/崩溃时不中断已连接的客户端，把配置项 `stop_instances_on_exit` 设为 `false`，
+> 并给上面的 systemd 单元加上 `KillMode=process`（否则服务重启会连带杀掉同 cgroup 内的 OpenVPN 进程）。
+
+需要在 **OpenWrt / ImmortalWrt** 部署时，请查看 [`doc-openwrt/README.md`](doc-openwrt/README.md)。
+
 ## 从源码构建
 
 需要 Go、Node.js 与 `go-bindata`（前端资源会被内嵌进二进制）：
 
 ```bash
-# 1) 构建前端
 cd front && npm install && npm run build && cd ..
-
-# 2) 将前端与默认脚本打包进程序
 go-bindata -o internal/assets/assets.go -pkg assets -prefix "front/dist" front/dist/...
 go-bindata -o internal/ovpn_server/assets.go -pkg ovpnserver \
   -prefix "internal/ovpn_server/default_resource" internal/ovpn_server/default_resource/...
-
-# 3) 编译后端
 go build -ldflags "-X 'main.buildDate=$(date '+%Y-%m-%d %H:%M:%S')'" ./cmd/openvpn-pannel/
-
-# 可选：剥离符号
-strip ./openvpn-pannel
 ```
 
 ## 文档
 
-完整的部署、证书管理、脚本与变量、限速计算示例、常见问题等，请查看面板内的 **帮助信息** 页面
-（对应资源 `help`；客户端导出模板对应资源 `client-config`，开启 `allow_edit_resource` 后可自行修改）。
-
-如果需要在OpenWRT下部署，请查看`doc-openwrt/README.md`
+部署细节、证书管理、脚本与变量、限速计算示例、常见问题等，请查看面板内的 **帮助信息** 页面。

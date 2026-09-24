@@ -114,31 +114,38 @@ done
 | `mysql_pass` | string | MySQL 密码。 |
 | `mysql_db` | string | MySQL 数据库名。 |
 | `sqlite_db` | string | SQLite 文件路径。**非空时优先使用 SQLite**，忽略 MySQL。 |
-| `passwd_salt` | string | 密码盐（随机字符串）。**一旦设定不要更改**，否则所有密码失效。 |
+| `passwd_salt` | string | 旧版密码哈希（`sha256(密码+盐)`）所用的盐。新密码已改用 **bcrypt**，不再依赖该盐；此项仅用于校验历史哈希，**不要更改**，见第 5.8 节。 |
 | `session_secret` | string | 会话签名密钥，建议 32 字符随机串。更改后所有登录会话失效。 |
 | `working_dir` | string | 工作目录绝对路径，存放各服务器实例的配置/证书/日志。 |
 | `internal_api_listen` | string | 内部 API 监听地址，建议保持 `127.0.0.1:59003`。 |
 | `client_page_listen` | string | 面向已连接 VPN 客户端的自助页面监听地址，如 `10.8.0.1:8088`。为空则不启用，见第 5.6 节。 |
 | `max_log_size_kb` | int | 单服务器日志容量上限（KB）。达到后自动轮换并清理最早归档；`<=0` 关闭轮换。 |
 | `allow_edit_resource` | bool | 是否允许修改/重置脚本等资源。**默认 false**，见第 9、12 节。 |
+| `stop_instances_on_exit` | bool | 面板进程退出（SIGINT/SIGTERM）前是否停止所有 OpenVPN 实例。**默认 true**；设为 `false` 时退出/崩溃都不停止实例，面板重启后依据数据库中的 PID 记录重新接管，客户端无感知，见第 5.7 节。 |
+| `trusted_proxies` | string[] | 反向代理服务器 IP/CIDR 白名单（如 `["127.0.0.1","10.0.0.0/8"]`）。仅这些来源的 `X-Forwarded-For`/`X-Real-IP` 会被采信为客户端 IP；为空时禁用代理信任。 |
 
 
 **完整示例**
 
 ```json
 {
-  "listen": ":8081",
+  "listen": ":8080",
   "mysql_addr": "127.0.0.1:3306",
-  "mysql_user": "ovp",
-  "mysql_pass": "CHANGE_ME",
-  "mysql_db": "openvpn_pannel",
-  "sqlite_db": "",
-  "passwd_salt": "CHANGE_ME_random_string",
-  "session_secret": "CHANGE_ME_32_byte_random_secret",
-  "working_dir": "/opt/openvpn-pannel/workdir",
+  "mysql_user": "your_mysql_user",
+  "mysql_pass": "your_mysql_password",
+  "mysql_db": "your_database_name",
+  "sqlite_db": "data.db",
+  "passwd_salt": "A)$\u0026!^%(Random-String-4312cdab",
+  "session_secret": "secret-key-32-byte-long-00001111",
+  "working_dir": "/tmp/openvpn-pannel",
   "internal_api_listen": "127.0.0.1:59003",
-  "max_log_size_kb": 20480,
-  "allow_edit_resource": false
+  "client_page_listen": "0.0.0.0:8088",
+  "max_log_size_kb": 16384,
+  "allow_edit_resource": false,
+  "stop_instances_on_exit": true,
+  "trusted_proxies": [
+    "127.0.0.1"
+  ]
 }
 ```
 
@@ -146,14 +153,19 @@ done
 
 ```json
 {
-  "listen": ":8081",
-  "sqlite_db": "/opt/openvpn-pannel/data.db",
-  "passwd_salt": "CHANGE_ME_random_string",
-  "session_secret": "CHANGE_ME_32_byte_random_secret",
-  "working_dir": "/opt/openvpn-pannel/workdir",
+  "listen": ":8080",
+  "sqlite_db": "data.db",
+  "passwd_salt": "A)$\u0026!^%(Random-String-4312cdab",
+  "session_secret": "secret-key-32-byte-long-00001111",
+  "working_dir": "/tmp/openvpn-pannel",
   "internal_api_listen": "127.0.0.1:59003",
-  "max_log_size_kb": 20480,
-  "allow_edit_resource": false
+  "client_page_listen": "0.0.0.0:8088",
+  "max_log_size_kb": 16384,
+  "allow_edit_resource": false,
+  "stop_instances_on_exit": true,
+  "trusted_proxies": [
+    "127.0.0.1"
+  ]
 }
 ```
 
@@ -264,6 +276,44 @@ curl http://10.8.0.1:8088/logout         # 登出并回收 ACL
 动态验证码，验证通过才进入面板。
 
 > 动态放行 / 回收 ACL 由资源 `acl_add.sh`、`acl_del.sh` 完成，见第 9 节。
+
+---
+
+### 5.7 面板重启时保留 OpenVPN 实例（客户端无感知）
+
+默认情况下，面板收到退出信号（SIGINT/SIGTERM）会先停止所有 OpenVPN 实例再退出。若面板自身
+崩溃后被 systemd 等托管进程自动拉起，这期间所有客户端都会断线。
+
+把 `config.json` 的 `stop_instances_on_exit` 设为 `false` 可避免这种中断：
+
+1. 面板**启动实例成功后**，把该实例的 PID 写入数据库（表 `server_process_records`）；
+   **停止实例成功后**删除对应记录。
+2. 面板退出（含崩溃）时**不停止**任何实例，OpenVPN 子进程成为孤儿进程，由 init/systemd 接管继续运行。
+3. 面板（重新）启动时，读取数据库中的 PID 记录：
+   - 进程仍存活 → **重新接管**（不重写配置、不重启进程），客户端连接不受影响；
+   - 进程已不存在 → 删除记录，若该服务器配置了自启动则按正常流程拉起。
+
+> 注意：要让进程在面板崩溃后被 systemd 重启时存活，托管单元的 `KillMode` 必须为 `process`
+> （而不是默认的 `control-group`），否则 systemd 重启服务时会连带杀掉同一 cgroup 内的 OpenVPN 进程。
+>
+> 该选项仅在面板**能访问同一份数据库**、且 `working_dir` 不变时有效。
+
+---
+
+### 5.8 密码存储、可信代理与登录限流
+
+**密码哈希**：用户密码使用 **bcrypt**（先对密码做一次 SHA-256 再 bcrypt，以支持超过 72 字节的长密码）。
+旧版本用 `sha256(密码+passwd_salt)` 存储的历史哈希仍可正常登录，且会在**首次成功登录时自动升级为 bcrypt**，
+无需手动重置密码。`passwd_salt` 因此只对历史哈希有意义，不要更改。
+
+**可信代理**：默认不信任任何代理，客户端 IP 一律取 TCP 来源地址，防止伪造 `X-Forwarded-For`。
+若面板部署在 Nginx/HAProxy 等反向代理之后，需要在 `config.json` 配置 `trusted_proxies`
+（代理服务器的 IP 或 CIDR 列表，如 `["127.0.0.1","10.0.0.0/8"]`），此时来自这些地址的请求才会采用
+`X-Forwarded-For`/`X-Real-IP` 作为真实客户端 IP。
+
+**登录限流**：为防止密码与动态验证码被快速暴力枚举，同一用户的**登录密码尝试**与**MFA 验证码尝试**
+各自有 **2 秒冷却**：2 秒内的重复尝试会收到 HTTP 429（`retry_after` 为剩余秒数）。两类尝试使用独立的
+冷却计时，因此“输入密码 → 弹出验证码框 → 提交验证码”的正常两步登录不会被误伤。
 
 ---
 

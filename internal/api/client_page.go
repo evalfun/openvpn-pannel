@@ -35,6 +35,15 @@ type clientIdentity struct {
 func (a *App) SetupClientPageRouter() *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
+	// 该页面按 TCP 来源地址（RemoteAddr）识别 VPN 客户端，不采信可伪造的代理头；
+	// 这里同步可信代理配置仅为消除 gin 默认“信任所有代理”的告警。
+	if len(a.cfg.TrustedProxies) > 0 {
+		if err := r.SetTrustedProxies(a.cfg.TrustedProxies); err != nil {
+			log.Printf("配置客户端自助页面可信代理失败: %v", err)
+		}
+	} else {
+		_ = r.SetTrustedProxies(nil)
+	}
 	r.GET("/", a.ClientPortalIndex)
 	r.GET("/index.html", a.ClientPortalIndex)
 	r.GET("/api/info", a.ClientPortalInfo)
@@ -318,6 +327,10 @@ func (a *App) verifyAndApplyMFA(id *clientIdentity, code string) error {
 	case models.MFA_TYPE_NONE:
 		return nil
 	case models.MFA_TYPE_TOTP:
+		// 防暴力破解：同一用户 2 秒内只允许提交一次验证码。
+		if ok, remain := a.loginCooldown.Allow("mfa:" + id.user.Username); !ok {
+			return fmt.Errorf("验证码尝试过于频繁，请 %d 秒后再试", retryAfterSeconds(remain))
+		}
 		if !totp.Validate(id.user.MFAData, code, nowFunc()) {
 			return fmt.Errorf("验证码错误或已过期")
 		}
@@ -479,10 +492,10 @@ const clientPortalHTML = `<!DOCTYPE html>
       '<div class="row"><span class="k">证书名称</span><span class="v">' + esc(d.cert_name || '-') + '</span></div>' +
       '<div class="row"><span class="k">公网 IP</span><span class="v">' + esc(d.public_ip || '-') + '</span></div>' +
       '<div class="row"><span class="k">内网 IP</span><span class="v">' + esc(d.virtual_ip) + '</span></div>' +
-      '<div class="row"><span class="k">上传流量</span><span class="v">' + fmtBytes(d.upload_bytes) + '</span></div>' +
-      '<div class="row"><span class="k">下载流量</span><span class="v">' + fmtBytes(d.download_bytes) + '</span></div>' +
-      '<div class="row"><span class="k">上传限速</span><span class="v">' + fmtLimit(d.upload_limit_kb) + '</span></div>' +
-      '<div class="row"><span class="k">下载限速</span><span class="v">' + fmtLimit(d.download_limit_kb) + '</span></div>' +
+      '<div class="row"><span class="k">客户端下载流量</span><span class="v">' + fmtBytes(d.upload_bytes) + '</span></div>' +
+      '<div class="row"><span class="k">客户端上传流量</span><span class="v">' + fmtBytes(d.download_bytes) + '</span></div>' +
+      '<div class="row"><span class="k">客户端下载限速</span><span class="v">' + fmtLimit(d.upload_limit_kb) + '</span></div>' +
+      '<div class="row"><span class="k">客户端上传限速</span><span class="v">' + fmtLimit(d.download_limit_kb) + '</span></div>' +
       '<h2 style="margin-top:18px">可访问的网络</h2>' + netsHtml +
       (d.mfa_required ? '<button id="logoutBtn" class="secondary">登出（回收网络权限）</button>' : '');
 

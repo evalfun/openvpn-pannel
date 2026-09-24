@@ -2,6 +2,7 @@ package ovpnserver
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -203,6 +204,7 @@ func (ins *OpenVPNServerInstance) Start(resourceMap map[string]string) error {
 	if err := ins.cmd.Start(); err != nil {
 		return fmt.Errorf("启动openvpn进程失败: %s", err.Error())
 	}
+	ins.pid = ins.cmd.Process.Pid
 	// 后台回收子进程并在退出时关闭 exited：不连接 management socket，
 	// 仅凭子进程状态即可判定存活，不会产生额外 openvpn 日志。
 	exited := make(chan struct{})
@@ -245,35 +247,40 @@ func (ins *OpenVPNServerInstance) Stop(resourceMap map[string]string) error {
 	}
 	// 先清除保活标记：主动停止的进程不允许被看门狗重新拉起。
 	ins.SetKeepAlive(false)
-	log.Printf("OpenVPN server %d 进程停止 PID: %d\n", ins.serverConfig.ID, ins.cmd.Process.Pid)
-	ins.cmd.Process.Signal(os.Interrupt)
-	// 子进程由 Start 里启动的 Wait 协程回收，这里只等待其退出信号，避免重复调用 Wait。
-	if ins.exited != nil {
-		select {
-		case <-ins.exited:
-			// 子进程在 8 秒内退出
-			log.Printf("OpenVPN server %d 进程正常停止 PID: %d\n", ins.serverConfig.ID, ins.cmd.Process.Pid)
-		case <-time.After(8 * time.Second):
-			// 超时！8 秒还没退出
-			log.Printf("OpenVPN server %d 进程停止超时 强制停止 PID: %d\n", ins.serverConfig.ID, ins.cmd.Process.Pid)
+	if ins.cmd != nil && ins.cmd.Process != nil {
+		log.Printf("OpenVPN server %d 进程停止 PID: %d\n", ins.serverConfig.ID, ins.cmd.Process.Pid)
+		ins.cmd.Process.Signal(os.Interrupt)
+		// 子进程由 Start 里启动的 Wait 协程回收，这里只等待其退出信号，避免重复调用 Wait。
+		if ins.exited != nil {
+			select {
+			case <-ins.exited:
+				// 子进程在 8 秒内退出
+				log.Printf("OpenVPN server %d 进程正常停止 PID: %d\n", ins.serverConfig.ID, ins.cmd.Process.Pid)
+			case <-time.After(8 * time.Second):
+				// 超时！8 秒还没退出
+				log.Printf("OpenVPN server %d 进程停止超时 强制停止 PID: %d\n", ins.serverConfig.ID, ins.cmd.Process.Pid)
 
-			// 尝试强制终止
-			if ins.cmd.Process != nil {
-				err := ins.cmd.Process.Kill()
-				if err != nil {
-					// 忽略 "process already finished"（Go ≥1.20）
-					if !errors.Is(err, os.ErrProcessDone) {
-						log.Printf("OpenVPN server %d 强制进程停止失败 PID: %d %v\n", ins.serverConfig.ID, ins.cmd.Process.Pid, err)
+				// 尝试强制终止
+				if ins.cmd.Process != nil {
+					err := ins.cmd.Process.Kill()
+					if err != nil {
+						// 忽略 "process already finished"（Go ≥1.20）
+						if !errors.Is(err, os.ErrProcessDone) {
+							log.Printf("OpenVPN server %d 强制进程停止失败 PID: %d %v\n", ins.serverConfig.ID, ins.cmd.Process.Pid, err)
+						} else {
+							log.Printf("OpenVPN server %d 强制进程停止成功 PID: %d\n", ins.serverConfig.ID, ins.cmd.Process.Pid)
+						}
 					} else {
 						log.Printf("OpenVPN server %d 强制进程停止成功 PID: %d\n", ins.serverConfig.ID, ins.cmd.Process.Pid)
 					}
-				} else {
-					log.Printf("OpenVPN server %d 强制进程停止成功 PID: %d\n", ins.serverConfig.ID, ins.cmd.Process.Pid)
+					// 等待 Wait() 返回（回收资源）
+					<-ins.exited
 				}
-				// 等待 Wait() 返回（回收资源）
-				<-ins.exited
 			}
 		}
+	} else if ins.pid > 0 {
+		// 面板重启后接管的外部进程：不是本进程的子进程，无法用 Wait 回收，按 PID 发信号。
+		stopAttachedProcess(ins.serverConfig.ID, ins.pid)
 	}
 	// 执行退出脚本
 	server_exit_script, ok := resourceMap[RESOURCE_ID_SERVER_EXIT_SCRIPT]
@@ -296,13 +303,86 @@ func (ins *OpenVPNServerInstance) Stop(resourceMap map[string]string) error {
 }
 
 func (ins *OpenVPNServerInstance) GetPID() int {
-	if ins.cmd == nil {
-		return -1
+	if ins.cmd != nil && ins.cmd.Process != nil {
+		return ins.cmd.Process.Pid
 	}
-	if ins.cmd.Process == nil {
-		return -1
+	return ins.pid
+}
+
+// AttachPID 接管一个面板重启前已在运行、且未被子进程 Wait 回收的 openvpn 进程。
+// 接管后实例的存活判定与停止都基于该 PID，不会重新写配置、也不会重新启动进程。
+func (ins *OpenVPNServerInstance) AttachPID(pid int) {
+	ins.pid = pid
+	atomic.StoreInt32(&ins.keepAlive, 1)
+}
+
+// ProcessAlive 判断指定 PID 的进程是否存在（发送 signal 0）。
+// EPERM 表示进程存在但当前用户无权限操作，仍视为存活；僵尸态进程视为已退出。
+func ProcessAlive(pid int) bool {
+	if pid <= 0 {
+		return false
 	}
-	return ins.cmd.Process.Pid
+	// 僵尸进程（已被 kill 但尚未被父进程回收）对 signal 0 仍会成功，必须排除。
+	if processIsZombie(pid) {
+		return false
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	err = proc.Signal(syscall.Signal(0))
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, os.ErrProcessDone) {
+		return false
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		return errno == syscall.EPERM
+	}
+	return false
+}
+
+// processIsZombie 读取 /proc/<pid>/stat 判断进程是否处于僵尸态（state == 'Z'）。
+// 非 Linux 或读取失败时返回 false。
+func processIsZombie(pid int) bool {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return false
+	}
+	// stat 格式：pid (comm) state ...，其中 comm 可能包含空格与括号，
+	// 因此取最后一个 ')' 之后、跳过空格的字符即为 state。
+	idx := bytes.LastIndexByte(data, ')')
+	if idx < 0 || idx+2 >= len(data) {
+		return false
+	}
+	return data[idx+2] == 'Z'
+}
+
+// stopAttachedProcess 停止一个面板接管的外部进程：先发 SIGINT 等待退出，超时后 SIGKILL。
+func stopAttachedProcess(serverID uint, pid int) {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return
+	}
+	log.Printf("OpenVPN server %d 进程停止(接管) PID: %d\n", serverID, pid)
+	proc.Signal(os.Interrupt)
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		if !ProcessAlive(pid) {
+			log.Printf("OpenVPN server %d 进程正常停止(接管) PID: %d\n", serverID, pid)
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	log.Printf("OpenVPN server %d 进程停止超时 强制停止(接管) PID: %d\n", serverID, pid)
+	if err := proc.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		log.Printf("OpenVPN server %d 强制进程停止失败(接管) PID: %d %v\n", serverID, pid, err)
+	}
+	for i := 0; i < 50 && ProcessAlive(pid); i++ {
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // SetKeepAlive 标记面板是否期望该实例进程保持运行。看门狗据此决定异常退出后是否自动拉起。
@@ -320,11 +400,9 @@ func (ins *OpenVPNServerInstance) KeepAlive() bool {
 }
 
 func (ins *OpenVPNServerInstance) Running() bool {
-	if ins.cmd == nil {
-		return false
-	}
-	if ins.cmd.Process == nil {
-		return false
+	if ins.cmd == nil || ins.cmd.Process == nil {
+		// 接管的外部进程：不是本进程子进程，直接按 PID 判定存活。
+		return ProcessAlive(ins.pid)
 	}
 	// Start 启动的 Wait 协程在进程退出后关闭 exited；僵尸态下 signal 0 仍会成功，
 	// 必须先用该通道判定，才能识别“已退出但未被回收”的情况。
