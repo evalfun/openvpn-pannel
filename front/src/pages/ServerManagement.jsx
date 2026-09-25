@@ -172,6 +172,7 @@ const ServerManagement = () => {
     data_cipher: 'AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305',
     topology: 'subnet',
     server_cidr: '100.66.10.0 255.255.255.0',
+    server_cidr6: '',
     duplicate_cn: true,
     keepalive: '10 50',
     tls_auth: '',
@@ -1026,6 +1027,16 @@ const ServerManagement = () => {
               {server.server_cidr}
             </Typography>
           </Box>
+          {server.server_cidr6 ? (
+            <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+              <Typography variant="body2" color="textSecondary">
+                IPv6 网段:
+              </Typography>
+              <Typography variant="body2" sx={{ textAlign: 'right' }}>
+                {server.server_cidr6}
+              </Typography>
+            </Box>
+          ) : null}
           <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
             <Typography variant="body2" color="textSecondary">
               自动启动:
@@ -1186,7 +1197,15 @@ const ServerManagement = () => {
                   <TableCell align="right">{server.port}</TableCell>
                   <TableCell>{server.proto}</TableCell>
                   <TableCell>{server.dev}</TableCell>
-                  <TableCell>{server.server_cidr}</TableCell>
+                  <TableCell>
+                    {server.server_cidr}
+                    {server.server_cidr6 ? (
+                      <>
+                        <br />
+                        {server.server_cidr6}
+                      </>
+                    ) : null}
+                  </TableCell>
                   <TableCell>
                     <Chip
                       label={server.auto_start ? '是' : '否'}
@@ -1368,15 +1387,16 @@ const ServerManagement = () => {
             margin="normal"
             sx={{  width: '100%', '@media (min-width:926px)': { width: '49%' } }}
           />
-          
+
           <TextField
             fullWidth
-            label="心跳配置 (间隔 阈值)"
-            value={formData.keepalive}
-            onChange={(e) => handleFormChange('keepalive', e.target.value)}
+            label="服务器 IPv6 网段 (如 fc00:2048:1024::/64，留空不启用)"
+            value={formData.server_cidr6}
+            onChange={(e) => handleFormChange('server_cidr6', e.target.value)}
             margin="normal"
             sx={{ width: '100%', '@media (min-width:926px)': { width: '49%' } }}
           />
+          
           </Box>
 
           <Autocomplete
@@ -1399,27 +1419,38 @@ const ServerManagement = () => {
               />
             )}
           />
-          
-          <FormControlLabel
-            control={
-              <Checkbox
-                checked={formData.auto_start}
-                onChange={(e) => handleFormChange('auto_start', e.target.checked)}
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 2, alignItems: 'center' }}>
+            <TextField
+              fullWidth
+              label="心跳配置 (间隔 阈值)"
+              value={formData.keepalive}
+              onChange={(e) => handleFormChange('keepalive', e.target.value)}
+              margin="normal"
+              sx={{ width: '100%', '@media (min-width:926px)': { width: '49%' } }}
+            />
+            <Box sx={{ width: '100%', '@media (min-width:926px)': { width: '48%' }, display: 'flex', alignItems: 'center', flexWrap: 'nowrap' }}>
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={formData.auto_start}
+                    onChange={(e) => handleFormChange('auto_start', e.target.checked)}
+                  />
+                }
+                label="自动启动"
+                sx={{ marginTop: 1, marginRight: 8 }}
               />
-            }
-            label="自动启动"
-            sx={{ marginTop: 1, marginRight: 8 }}
-          />
-          <FormControlLabel
-            control={
-              <Checkbox
-                checked={formData.duplicate_cn}
-                onChange={(e) => handleFormChange('duplicate_cn', e.target.checked)}
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={formData.duplicate_cn}
+                    onChange={(e) => handleFormChange('duplicate_cn', e.target.checked)}
+                  />
+                }
+                label="同证书多次登录"
+                sx={{ marginTop: 1 }}
               />
-            }
-            label="同证书多次登录"
-            sx={{ marginTop: 1 }}
-          />
+            </Box>
+          </Box>
           <Box sx={{ marginTop: 2 }}>
             <Stack direction="row" alignItems="center" spacing={1} sx={{ marginBottom: 1, flexWrap: 'wrap' }}>
               <Typography variant="subtitle2">CA 证书</Typography>
@@ -1530,10 +1561,11 @@ const ServerManagement = () => {
             multiline
             rows={5}
             helperText='可添加 remote-cert-tls client 限制客户端证书类型（要求客户端证书含 clientAuth 用途）。'
-            placeholder='mssfix 1308
-push "route 10.0.2.0 255.255.255.0"
-push "dhcp-option DNS [IP 網址]"
-push "redirect-gateway def1"'
+            placeholder='mssfix 1308 # TCP MSS钳制
+push "route 10.0.2.0 255.255.255.0"  # 推送路由
+push "route-ipv6 fc00:131::/64"      # 推送ipv6路由
+push "dhcp-option DNS [IP 網址]"     # 推送DNS 
+push "redirect-gateway def1"         # 推送默认网关'        
           />
         </DialogContent>
         <DialogActions>
@@ -2268,7 +2300,7 @@ push "redirect-gateway def1"'
             margin="normal"
             multiline
             rows={6}
-            placeholder="#指定客户端ip地址&#10;ifconfig-push 100.66.10.73 255.255.255.0&#10;#指定通向客户端的路由&#10;iroute 192.168.17.0 255.255.255.0&#10;#为客户端推送指定路由&#10;push &quot;route 192.168.1.0 255.255.255.0&quot;"
+            placeholder="disable #禁止使用此证书的客户端连接&#10;#指定客户端ip地址&#10;ifconfig-push 100.66.10.73 255.255.255.0&#10;#指定通向客户端的路由&#10;iroute 192.168.17.0 255.255.255.0&#10;#为客户端推送指定路由&#10;push &quot;route 192.168.1.0 255.255.255.0&quot;&#10;push &quot;route-ipv6 fc00:131::/64&quot;"
             required
           />
         </DialogContent>

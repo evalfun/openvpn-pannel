@@ -15,6 +15,8 @@
   | `bash` | 资源脚本使用 bash 语法 | 脚本无法运行 |
   | `ipset` | ACL 聚合放行 | 自动回落到逐条 `iptables` 规则（功能可用、性能较差） |
   | `tc` | 带宽限速 | 记录日志并自动跳过限速 |
+  | `kmod-ifb` + `kmod-sched-act-mirred` | 下载（入方向）限速（**自编译固件必选**，详见 3.4.2） | 回退 `kmod-sched-act-police`；两者都缺失则下载限速跳过并记录 WARNING |
+  | `kmod-sched-act-police` | 下载限速的备用方案（**自编译固件通常没有此模块**） | 若同时无 ifb/act_mirred，则下载限速跳过并记录 WARNING |
   | `iptables` | 下发 ACL 规则 | 无法放行 |
   | `flock` | 上下线脚本串行化 | 并发时可能相互覆盖规则 |
   | `conntrack` | 登出时清空该客户端的连接跟踪（状态表） | 记录日志并跳过，已建立的连接会继续放行到超时 |
@@ -23,10 +25,9 @@
 
 ```sh
 opkg update
-opkg install bash ipset tc iptables flock conntrack
+opkg install bash ipset tc iptables flock conntrack kmod-ifb kmod-sched-act-mirred
 ```
 
-> 旧版 **fw3 + iptables 未经测试**，行为可能与本文不同。
 
 ---
 
@@ -126,6 +127,119 @@ chmod +x /etc/init.d/openvpn-pannel
 > 面板会在 fw4 之前（`priority -200`）用自身规则直接 `drop` 未放行的流量，从而实施真正的
 > 访问控制；若仍设为拒绝，fw4 会把面板已放行的流量一并拒绝。
 
+### 3.4.1 关于服务器 IPv6（是否开启）
+
+面板支持为服务器开启 IPv6（“服务器管理”里的**服务器 IPv6 网段**，对应 OpenVPN 的 `server-ipv6`）。
+**是否开启请按业务实际情况决定：**
+
+- **开启 IPv6 的好处**：即便你没有任何 IPv6 业务，也建议开启。否则接口上没有 IPv6 地址，
+  客户端会认为“本机没有 IPv6 网络”，可能导致其正常的 IPv6 出公网流量异常（本机 IPv6 流量
+  不会经由 VPN 转发，行为不符合预期）。
+- **开启 IPv6 的坏处**：极少数**完全禁用了 IPv6 的主机**，由于无法为其接口配置 IPv6 地址，
+  会出现连接失败。
+
+因此推荐默认开启；只有在明确知道客户端主机全部禁用了 IPv6 时，才关闭（把该字段留空）。
+
+> 四个脚本目录（二进制内置的默认资源、`doc-openwrt/`、`nftables-scripts/generic/`、
+> `nftables-scripts/openwrt/`）均已支持 IPv6 的 ACL、限速与流量统计。
+
+### 3.4.2 下载限速方案实测（自编译 OpenWrt 固件必读）
+
+自编译固件通常**不带 `kmod-sched-act-police`，也不带 `kmod-ifb` / `kmod-sched-act-mirred`**，
+因此需要先确认可用方案。下面是真实设备（ImmortalWrt SNAPSHOT、内核 6.18.39、x86_64）在
+OpenVPN 隧道接口上的实测结论。
+
+面向**下载方向（客户端 → 服务器，即服务器的入方向）**，常见做法有以下几类：
+
+| 方案 | 原理 | 需要的内核模块 | 本设备实测 |
+| --- | --- | --- | --- |
+| **ifb + HTB** | ingress 上把匹配的包 `mirred egress redirect` 到 `ifb`，在 ifb 上做 HTB 整形 | `ifb`、`act_mirred`、`sch_ingress`、`sch_htb`、`cls_u32` | ✅ **可用**，8Mbit 限到 ~7.5–8 Mbits/sec |
+| **ifb + TBF** | 同上，整形器换成 TBF | `ifb`、`act_mirred`、`sch_ingress`、`sch_tbf`、`cls_u32` | ✅ **可用**，8Mbit 限到 ~7.7 Mbits/sec |
+| **ifb + CAKE** | 同上，整形器换成 CAKE | `ifb`、`act_mirred`、`sch_ingress`、`sch_cake`、`cls_u32` | ✅ **可用**，8Mbit 限到 ~7.6 Mbits/sec |
+| **ingress + police** | 在 ingress 过滤器的 action 里直接 `police rate ... drop` | `sch_ingress`、`cls_u32`、**`act_police`** | ❌ **不可用**（`RTNETLINK answers: No such file or directory`），自编译固件普遍缺 `act_police.ko` |
+| **iptables/nft 的 `limit`/`hashlimit`** | 用防火墙匹配模块按速率丢包 | 对应 xt/nft match | ⚠️ 只能做粗粒度丢包，**不是整形**，会重传、抖动大，**不推荐**做带宽限速 |
+| **应用层 / OpenVPN `shaper`** | OpenVPN 自带 `--shaper`（仅出方向、全局） | 无 | ⚠️ 仅能限**上传**且是全局总量，无法按客户端（详见下方说明） |
+
+**结论：**
+
+- 本类自编译固件**能用的下载限速方案是「ifb + HTB/TBF/CAKE」这一族**，前提是固件里编进了
+  `kmod-ifb` + `kmod-sched-act-mirred`。若这两个也没有，则**没有任何内核级下载限速方案**，
+  脚本会记录 WARNING 并跳过下载限速（上传限速不受影响）。
+- 面板脚本的默认实现是 **ifb + HTB**；`ratelimit.sh`（达量限速）同样基于 ifb。
+- 上传方向（服务器 → 客户端，服务器的出方向）用常规 egress qdisc（HTB/TBF/CAKE）即可，
+  不需要 ifb，本设备同样可用。
+
+**如何检查固件带不带这些模块**（有对应 `.ko` 文件或能 `modprobe` 即可）：
+
+```sh
+ls /lib/modules/$(uname -r)/ | grep -E 'ifb|act_mirred|act_police|sch_htb|sch_tbf|sch_cake|cls_u32|sch_ingress'
+modprobe ifb && echo "ifb OK"
+modprobe act_mirred && echo "act_mirred OK"
+modprobe act_police && echo "act_police OK"   # 一般会失败
+```
+
+**手动验证 ifb + HTB 是否生效**（把 `DEV` 换成你的 openvpn 隧道接口）：
+
+```sh
+DEV=tunudp1300
+ip link add ifb9 type ifb && ip link set ifb9 up
+tc qdisc add dev $DEV handle ffff: ingress
+tc filter add dev $DEV parent ffff: protocol ip prio 1 \
+    u32 match ip src <客户端隧道IP>/32 action mirred egress redirect dev ifb9
+tc qdisc add dev ifb9 root handle 1: htb default 9999
+tc class add dev ifb9 parent 1: classid 1:2 htb rate 8000kbit ceil 8000kbit
+tc filter add dev ifb9 parent 1: protocol ip prio 1 \
+    u32 match ip src <客户端隧道IP>/32 flowid 1:2
+# 之后在客户端跑: iperf3 -c <服务器隧道IP> ，应降到约 8 Mbits/sec
+```
+
+**注意（探测顺序）**：在 ingress 上挂规则前，必须**先创建 `ffff:` ingress qdisc**
+（`tc qdisc add dev $DEV handle ffff: ingress`）。否则 `tc filter add ... parent ffff:`
+会返回 `RTNETLINK answers: Invalid argument`，被误判为“限速不可用”。
+
+**清理顺序**（避免 `Resource busy` 残留）：
+
+```sh
+tc filter del dev $DEV parent ffff: protocol ip prio 1
+tc qdisc del dev $DEV ingress
+tc class del dev ifb9 classid 1:2
+tc qdisc del dev ifb9 root
+ip link del ifb9
+```
+
+> **脚本中的实现**：OpenWrt 版资源脚本（`doc-openwrt/` 与 `nftables-scripts/openwrt/`）
+> 已按本节结论处理，无需手动操作：
+>
+> - 下载限速的 ifb 设备名统一为 **`ovpnrl<服务器ID>`**（加长并加前缀，避免与系统
+>   自带的 `ifb0`/`ifb1` 或其它程序的 ifb 设备重名）。
+> - `client_online.sh` / `ratelimit.sh` 在探测方案前**先创建主接口的 `ffff:` ingress qdisc**；
+>   若探测失败且 ingress 是本次新建的，会把它删除，避免留下空 qdisc。
+> - `server_start.sh` 启动时会清理上次异常退出遗留的 `ovpnrl<服务器ID>` 设备与主接口 ingress；
+>   `server_exit.sh` 停止时会删除主接口 ingress（含其上过滤器）并删除 `ovpnrl<服务器ID>` 设备。
+
+**两套脚本的下载限速策略（默认行为）**
+
+> **普通 Linux 发行版默认用 `police`，`ifb` 方案仅在 OpenWrt 脚本中启用。**
+
+| | 普通 Linux（默认资源 / `nftables-scripts/generic/`） | OpenWrt（`doc-openwrt/` / `nftables-scripts/openwrt/`） |
+| --- | --- | --- |
+| **默认方案** | ingress + **police**（纯丢包限速，无探测） | 探测后 **ifb + HTB** 优先，**police** 回退 |
+| **依赖模块** | `sch_ingress`、`cls_u32`、`act_police` | ifb 分支需 `ifb` + `act_mirred` + `sch_htb`；police 分支需 `act_police` |
+| **设备/状态** | 无额外设备，一行 filter 即完成 | 每个服务器多一个 `ovpnrl<服务器ID>` 虚拟设备 + 主接口 ingress |
+
+**两种方案的优势与缺点：**
+
+- **ingress + police（普通 Linux 默认）**
+  - ✅ 优势：实现最简单，**无状态**（不需要创建/维护/清理 ifb 设备），普通发行版内核普遍自带 `act_police`，开箱即用。
+  - ❌ 缺点：只是**超速丢包**，不是整形；被限速的连接会触发 TCP 重传、速率抖动大，实测接近但不如整形平滑。
+- **ifb + HTB（OpenWrt 脚本默认优先）**
+  - ✅ 优势：是真正的**整形**（排队、平滑），限速更稳、抖动小；不依赖 OpenWrt 常缺的 `act_police`。
+  - ❌ 缺点：需要固件编入 `kmod-ifb` + `kmod-sched-act-mirred`；脚本需**探测**方案、创建/设置/清理 ifb 设备与 ingress qdisc，逻辑更复杂，异常退出时可能残留设备（已在 `server_start.sh`/`server_exit.sh` 中回收）。
+
+> 如果你希望**一定**具备下载限速能力：在编译固件时选中 `kmod-ifb` 与
+> `kmod-sched-act-mirred`（以及 `kmod-sched-htb`、`kmod-sched-core`）。
+> 若你确实无法加入这些模块，那么请接受“无下载限速”这一现状，面板会明确记录 WARNING。
+
 ### 3.5 新建防火墙区域
 
 在「网络 → 防火墙 → 区域」中新建区域 **`openvpn`**：
@@ -173,7 +287,6 @@ chmod +x /etc/init.d/openvpn-pannel
 - 客户端能访问哪些目标、是否限速，由**面板的 ACL** 决定。
 - fw4 区域的入站/转发/出站策略主要决定默认策略与是否放行到路由器本机（见 3.5）。
 
-> 旧的 **fw3 + iptables** 未测试。
 
 ---
 
@@ -199,7 +312,7 @@ chmod +x /etc/init.d/openvpn-pannel
 
 ## 6. 常见问题
 
-- **限速不生效**：确认已安装 `tc`，且内核包含 `sch_htb`、`cls_u32`、`act_police`、`sch_ingress`；并在面板「资源文件」中把 `ratelimit.sh` 替换为本目录的 OpenWrt 版本。缺失时脚本会记录日志并跳过限速，不影响连接；达量限速在运行中变化时依赖 `ratelimit.sh` 重设 tc。
+- **限速不生效**：确认已安装 `tc`，且内核包含 `sch_htb`、`cls_u32`、`sch_ingress`。**下载（入方向）限速**优先依赖 `ifb` + `act_mirred`（安装 `kmod-ifb`、`kmod-sched-act-mirred`），不可用时回退 `act_police`；两者都缺失时脚本会记录 WARNING 并跳过下载限速（上传限速不受影响）。**自编译固件通常既无 `act_police`、也可能未编入 `ifb`/`act_mirred`，请按 3.4.2 实测确认你的固件到底能用哪种方案**。并在面板「资源文件」中把 `ratelimit.sh` 替换为本目录的 OpenWrt 版本。缺失时脚本会记录日志并跳过限速，不影响连接；达量限速在运行中变化时依赖 `ratelimit.sh` 重设 tc。
 - **ACL 未生效**：默认脚本确认已安装 `ipset`。缺失时脚本会回落到逐条 `iptables` 模式（功能仍可用）。若使用 `nftables-scripts/openwrt/` 的版本，则无需 `ipset` / `iptables`，但需安装 `nftables`，并确认服务端启动脚本成功建立了 `openvpn_acl_<服务器ID>` 表。
 - **启用 MFA 后客户端一直无法上网**：确认已在客户端自助页面完成动态验证码验证；若使用 nftables 版本，请把 `acl_add.sh`、`acl_del.sh` 也一并替换为 `nftables-scripts/openwrt/` 下的同名文件。
 - **应用接口后地址消失**：属正常现象，见 3.6，重启服务器进程即可恢复。

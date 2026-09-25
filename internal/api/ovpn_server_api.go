@@ -42,6 +42,7 @@ func (a *App) CreateOpenVPNServerHandler(c *gin.Context, user *models.User) {
 		DataCipher        string   `json:"data_cipher" binding:"required,min=1,max=512"`
 		Topology          string   `json:"topology" binding:"required,min=1,max=100"`
 		ServerCIDR        string   `json:"server_cidr" binding:"required,min=1,max=100"`
+		ServerCIDR6       string   `json:"server_cidr6" binding:"max=100"`
 		DuplicateCN       bool     `json:"duplicate_cn"`
 		Keepalive         string   `json:"keepalive" binding:"required,min=1,max=100"`
 		TLSAuthKey        string   `json:"tls_auth" binding:"required,min=1,max=16384"`
@@ -84,6 +85,7 @@ func (a *App) CreateOpenVPNServerHandler(c *gin.Context, user *models.User) {
 		DataCipher:        param.DataCipher,
 		Topology:          param.Topology,
 		ServerCIDR:        param.ServerCIDR,
+		ServerCIDR6:       param.ServerCIDR6,
 		DuplicateCN:       param.DuplicateCN,
 		Keepalive:         param.Keepalive,
 		TLSAuthKey:        param.TLSAuthKey,
@@ -128,6 +130,7 @@ func (a *App) GetOpenVPNServerInfoHandler(c *gin.Context, user *models.User) {
 		DataCipher        string   `json:"data_cipher" binding:"required"`
 		Topology          string   `json:"topology" binding:"required"`
 		ServerCIDR        string   `json:"server_cidr" binding:"required"`
+		ServerCIDR6       string   `json:"server_cidr6"`
 		DuplicateCN       bool     `json:"duplicate_cn" binding:"required"`
 		Keepalive         string   `json:"keepalive" binding:"required"`
 		TLSAuthKey        string   `json:"tls_auth" binding:"required"`
@@ -170,6 +173,7 @@ func (a *App) GetOpenVPNServerInfoHandler(c *gin.Context, user *models.User) {
 		DataCipher:        serverModel.DataCipher,
 		Topology:          serverModel.Topology,
 		ServerCIDR:        serverModel.ServerCIDR,
+		ServerCIDR6:       serverModel.ServerCIDR6,
 		DuplicateCN:       serverModel.DuplicateCN,
 		Keepalive:         serverModel.Keepalive,
 		TLSAuthKey:        serverModel.TLSAuthKey,
@@ -214,6 +218,7 @@ func (a *App) UpdateOpenVPNServerHandler(c *gin.Context, user *models.User) {
 		DataCipher        string   `json:"data_cipher" binding:"required,min=1,max=512"`
 		Topology          string   `json:"topology" binding:"required,min=1,max=16384"`
 		ServerCIDR        string   `json:"server_cidr" binding:"required,min=1,max=16384"`
+		ServerCIDR6       string   `json:"server_cidr6" binding:"max=16384"`
 		DuplicateCN       bool     `json:"duplicate_cn"`
 		Keepalive         string   `json:"keepalive" binding:"required,min=1,max=100"`
 		TLSAuthKey        string   `json:"tls_auth" binding:"required,min=1,max=16384"`
@@ -265,6 +270,7 @@ func (a *App) UpdateOpenVPNServerHandler(c *gin.Context, user *models.User) {
 		DataCipher:        param.DataCipher,
 		Topology:          param.Topology,
 		ServerCIDR:        param.ServerCIDR,
+		ServerCIDR6:       param.ServerCIDR6,
 		DuplicateCN:       param.DuplicateCN,
 		Keepalive:         param.Keepalive,
 		TLSAuthKey:        param.TLSAuthKey,
@@ -348,15 +354,16 @@ func (a *App) DeleteOpenVPNServerHandler(c *gin.Context, user *models.User) {
 // 列出已有的服务器
 func (a *App) ListOpenVPNServerHandler(c *gin.Context, user *models.User) {
 	type Response struct {
-		ID         uint   `gorm:"primarykey" json:"id" binding:"required"`
-		Name       string `json:"name" binding:"required"`
-		Local      string `json:"local" `
-		Port       uint32 `json:"port" binding:"required"`
-		Proto      string `json:"proto" binding:"required"`
-		Dev        string `json:"dev" binding:"required"`
-		ServerCIDR string `json:"server_cidr" binding:"required"`
-		AutoStart  bool   `json:"auto_start" binding:"required"`
-		Running    bool   `json:"running" binding:"required"`
+		ID          uint   `gorm:"primarykey" json:"id" binding:"required"`
+		Name        string `json:"name" binding:"required"`
+		Local       string `json:"local" `
+		Port        uint32 `json:"port" binding:"required"`
+		Proto       string `json:"proto" binding:"required"`
+		Dev         string `json:"dev" binding:"required"`
+		ServerCIDR  string `json:"server_cidr" binding:"required"`
+		ServerCIDR6 string `json:"server_cidr6"`
+		AutoStart   bool   `json:"auto_start" binding:"required"`
+		Running     bool   `json:"running" binding:"required"`
 	}
 	resultList, err := a.daoManager.ListOpenVPNServer()
 	if err != nil {
@@ -373,15 +380,16 @@ func (a *App) ListOpenVPNServerHandler(c *gin.Context, user *models.User) {
 	responseList = make([]Response, 0)
 	for _, serverModel := range resultList {
 		response := Response{
-			ID:         serverModel.ID,
-			Name:       serverModel.Name,
-			Local:      serverModel.Local,
-			Port:       serverModel.Port,
-			Proto:      serverModel.Proto,
-			Dev:        serverModel.Dev,
-			ServerCIDR: serverModel.ServerCIDR,
-			AutoStart:  serverModel.AutoStart,
-			Running:    false,
+			ID:          serverModel.ID,
+			Name:        serverModel.Name,
+			Local:       serverModel.Local,
+			Port:        serverModel.Port,
+			Proto:       serverModel.Proto,
+			Dev:         serverModel.Dev,
+			ServerCIDR:  serverModel.ServerCIDR,
+			ServerCIDR6: serverModel.ServerCIDR6,
+			AutoStart:   serverModel.AutoStart,
+			Running:     false,
 		}
 		serverInstance, ok := a.ovpnProcessList[response.ID]
 		if ok {
@@ -1024,6 +1032,7 @@ type ServerStatusClientInfoResponse struct {
 	CommonName     string   `json:"common_name"`
 	RealIPAddr     string   `json:"real_ip_addr"`
 	VirtualIPAddr  []string `json:"virtual_ip_addr"`
+	VirtualIP6Addr []string `json:"virtual_ip6_addr"`
 	ByteReceived   int      `json:"last_byte_received"`
 	ByteSent       int      `json:"last_byte_sent"`
 	ConnectedSince string   `json:"connected_since"`
@@ -1034,7 +1043,12 @@ type ServerStatusClientInfoResponse struct {
 type ServerStatusResponse struct {
 	Version           string `json:"version"`
 	ManagementVersion string `json:"management_version"`
-	ClientList        []*ServerStatusClientInfoResponse
+	// ManagementAvailable 表示管理接口（management socket）是否可用。
+	// 极个别 openvpn 服务器无法开启管理接口，此时状态改由状态文件读取：
+	// 版本信息无法获取（Version=未知、ManagementVersion=不可用），
+	// 前端应据此禁用“断开客户端”按钮（踢人依赖管理接口，必然失败）。
+	ManagementAvailable bool `json:"management_available"`
+	ClientList          []*ServerStatusClientInfoResponse
 }
 
 func (a *App) GetOpenVPNServerStatusHandler(c *gin.Context, user *models.User) {
@@ -1064,17 +1078,41 @@ func (a *App) GetOpenVPNServerStatusHandler(c *gin.Context, user *models.User) {
 	pl.Lock()
 	status, err := serverInstance.GetStatus(resourceMap)
 	pl.Unlock()
+
+	managementAvailable := true
+	version := ""
+	managementVersion := ""
+	var clientInfoList []*ovpnserver.ServerStatusClientInfoResponse
 	if err != nil {
-		c.JSON(500, gin.H{
-			"result": "failed",
-			"error":  "获取状态失败: " + err.Error(),
-		})
-		return
+		// 极个别 openvpn 服务器不支持管理接口（打开失败），此时状态信息取不到，
+		// 回退到读取状态文件（openvpn-status.log）获取客户端列表。状态文件里没有
+		// 版本信息，因此版本显示为“未知 / 不可用”，并标记管理接口不可用，
+		// 前端据此禁用“断开客户端”按钮（踢人依赖管理接口，必然失败）。
+		managementAvailable = false
+		version = "未知"
+		managementVersion = "不可用"
+		log.Printf("获取服务器 %d 状态失败，回退读取状态文件: %v", serverID, err)
+		pl.RLock()
+		clientInfoList, err = serverInstance.GetStatusFromFile(resourceMap)
+		pl.RUnlock()
+		if err != nil {
+			c.JSON(500, gin.H{
+				"result": "failed",
+				"error":  "获取状态失败: " + err.Error(),
+			})
+			return
+		}
+	} else {
+		version = status.Version
+		managementVersion = status.ManagementVersion
+		clientInfoList = status.ClientList
 	}
+
 	response := &ServerStatusResponse{
-		Version:           status.Version,
-		ManagementVersion: status.ManagementVersion,
-		ClientList:        []*ServerStatusClientInfoResponse{},
+		Version:             version,
+		ManagementVersion:   managementVersion,
+		ManagementAvailable: managementAvailable,
+		ClientList:          []*ServerStatusClientInfoResponse{},
 	}
 	connectedClientInfoRecordList, err := a.daoManager.ListConnectedClientInfoRecordByServerID(uint(serverID))
 	// map[ip][username]
@@ -1082,6 +1120,9 @@ func (a *App) GetOpenVPNServerStatusHandler(c *gin.Context, user *models.User) {
 	if err == nil {
 		for _, info := range connectedClientInfoRecordList {
 			ip2usernameMap[info.VirtualIPAddr] = info.Username
+			if info.VirtualIP6Addr != "" {
+				ip2usernameMap[info.VirtualIP6Addr] = info.Username
+			}
 		}
 	}
 	aclList, err := a.daoManager.ListAddedACLByServerID(uint(serverID))
@@ -1092,9 +1133,12 @@ func (a *App) GetOpenVPNServerStatusHandler(c *gin.Context, user *models.User) {
 		for _, acl := range aclList {
 			aclString := fmt.Sprintf("%d#%s", acl.ACLType, acl.ACLValue)
 			ip2aclMap[acl.VirtualIPAddr] = append(ip2aclMap[acl.VirtualIPAddr], aclString)
+			if acl.VirtualIP6Addr != "" {
+				ip2aclMap[acl.VirtualIP6Addr] = append(ip2aclMap[acl.VirtualIP6Addr], aclString)
+			}
 		}
 	}
-	for _, clientInfo := range status.ClientList {
+	for _, clientInfo := range clientInfoList {
 		username := ""
 		// 给客户端信息补上用户名
 		for _, virtualIPAddr := range clientInfo.VirtualIPAddr {
@@ -1104,21 +1148,41 @@ func (a *App) GetOpenVPNServerStatusHandler(c *gin.Context, user *models.User) {
 				break
 			}
 		}
+		if username == "" {
+			for _, virtualIPAddr := range clientInfo.VirtualIP6Addr {
+				_username, ok := ip2usernameMap[virtualIPAddr]
+				if ok {
+					username = _username
+					break
+				}
+			}
+		}
 		aclStringList := []string{}
 		// 给客户端信息补上ACL列表
 		// 一般来说  clientInfo.VirtualIPAddr 只有一个虚拟IP
 		// 如果有多个，就是客户端网段路由 客户端网段路由不会获取到acl的
-		// ipv6先不实现 除非有人充钱给我实现 或者他自己去实现
-		for _, virtualIPAddr := range clientInfo.VirtualIPAddr {
-			acl, ok := ip2aclMap[virtualIPAddr]
-			if ok {
-				aclStringList = append(aclStringList, acl...)
+		// 同一份 ACL 记录同时以 IPv4/IPv6 两个地址为键，遍历两个地址族会命中同一份，
+		// 因此这里去重，避免 acl_list 出现重复项。
+		seenACL := make(map[string]bool)
+		appendACL := func(virtualIPAddr string) {
+			for _, a := range ip2aclMap[virtualIPAddr] {
+				if !seenACL[a] {
+					seenACL[a] = true
+					aclStringList = append(aclStringList, a)
+				}
 			}
+		}
+		for _, virtualIPAddr := range clientInfo.VirtualIPAddr {
+			appendACL(virtualIPAddr)
+		}
+		for _, virtualIPAddr := range clientInfo.VirtualIP6Addr {
+			appendACL(virtualIPAddr)
 		}
 		response.ClientList = append(response.ClientList, &ServerStatusClientInfoResponse{
 			CommonName:     clientInfo.CommonName,
 			RealIPAddr:     clientInfo.RealIPAddr,
 			VirtualIPAddr:  clientInfo.VirtualIPAddr,
+			VirtualIP6Addr: clientInfo.VirtualIP6Addr,
 			ByteReceived:   clientInfo.ByteReceived,
 			ByteSent:       clientInfo.ByteSent,
 			ConnectedSince: clientInfo.ConnectedSince,
@@ -1168,9 +1232,10 @@ func (a *App) CloseOpenVPNServerClientHandler(c *gin.Context, user *models.User)
 		return
 	}
 	// 踢客户端要访问管理 socket，取实例写锁，与其它 socket 操作互斥。
+	// 这里只知道客户端真实地址（ip:port），common_name 由 CloseClient 在管理接口版本 >= 6 时自行反查。
 	pl := a.getProcessLock(param.ID)
 	pl.Lock()
-	message, err := serverInstance.CloseClient(param.ReadIPAddr, resourceMap)
+	message, err := serverInstance.CloseClient("", param.ReadIPAddr, resourceMap)
 	pl.Unlock()
 	if err != nil {
 		c.JSON(500, gin.H{

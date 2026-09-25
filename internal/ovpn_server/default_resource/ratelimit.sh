@@ -4,7 +4,8 @@
 # 且生效限速（达量限速方案与用户/用户组限速取最低）发生变化时，
 # 面板把变化的客户端通过标准输入传进来，本脚本重新设置或移除对应的 tc 限速。
 #
-# 标准输入每行（空白分隔）：<虚拟IPv4> <上传KB/s> <下载KB/s>
+# 标准输入每行（空白分隔）：<虚拟IP> <上传KB/s> <下载KB/s>
+# 虚拟 IP 可以是 IPv4 或 IPv6（纯 IPv6 客户端传其 IPv6 地址）。
 # 0 表示该方向不限速（会移除该方向已存在的 tc 规则）。
 # 上传 = 服务器 -> 客户端；下载 = 客户端 -> 服务器。
 
@@ -27,6 +28,28 @@ done
 [ -z "$TC_BIN" ] && TC_BIN="sudo tc"
 
 TC_DEV="$SERVER_INTERFACE"
+
+minor_from_v4() {
+    local _c _d M
+    _c=$(printf '%s' "$1" | cut -d. -f3)
+    _d=$(printf '%s' "$1" | cut -d. -f4)
+    M=$(( (${_c:-0} << 8) | ${_d:-0} ))
+    [ "$M" -le 0 ] && M=1
+    [ "$M" -ge 65535 ] && M=65534
+    [ "$M" -eq 9999 ] && M=9998
+    printf '%s' "$M"
+}
+minor_from_v6() {
+    local _h M
+    _h=${1##*:}
+    case "$_h" in ''|*[!0-9a-fA-F]*) _h=0 ;; esac
+    M=$(( 16#${_h:-0} ))
+    [ "$M" -le 0 ] && M=1
+    [ "$M" -ge 65535 ] && M=65534
+    [ "$M" -eq 9999 ] && M=9998
+    printf '%s' "$M"
+}
+
 if [ -z "$TC_DEV" ]; then
     log_message "WARNING" "服务器 $SERVER_ID 未配置网卡，跳过达量限速更新"
     exit 0
@@ -58,12 +81,12 @@ fi
 
 printf '%b' "$CHANGES" | while read -r client_ip upload_kb download_kb; do
     [ -z "$client_ip" ] && continue
-    _c=$(printf '%s' "$client_ip" | cut -d. -f3)
-    _d=$(printf '%s' "$client_ip" | cut -d. -f4)
-    MINOR=$(( (${_c:-0} << 8) | ${_d:-0} ))
-    [ "$MINOR" -le 0 ] && MINOR=1
-    [ "$MINOR" -ge 65535 ] && MINOR=65534
-    [ "$MINOR" -eq 9999 ] && MINOR=9998
+    # 依据地址族选择协议/匹配方式与 classid 推导（与上/下线脚本一致）
+    if [ "${client_ip#*:}" != "$client_ip" ]; then
+        PROTO="ipv6"; MATCH="ip6"; PREFIX="/128"; MINOR=$(minor_from_v6 "$client_ip")
+    else
+        PROTO="ip"; MATCH="ip"; PREFIX="/32"; MINOR=$(minor_from_v4 "$client_ip")
+    fi
 
     if [ "$upload_kb" -gt 0 ]; then
         if ! $TC_BIN qdisc show dev "$TC_DEV" 2>/dev/null | grep -q 'htb 1:'; then
@@ -75,11 +98,13 @@ printf '%b' "$CHANGES" | while read -r client_ip upload_kb download_kb; do
         [ "$UPLOAD_BURST" -lt 3000 ] && UPLOAD_BURST=3000
         $TC_BIN class add dev "$TC_DEV" parent 1: classid 1:$MINOR htb rate ${UPLOAD_KBIT}kbit ceil ${UPLOAD_KBIT}kbit burst ${UPLOAD_BURST} cburst ${UPLOAD_BURST} quantum 1500 2>/dev/null \
             || $TC_BIN class change dev "$TC_DEV" classid 1:$MINOR htb rate ${UPLOAD_KBIT}kbit ceil ${UPLOAD_KBIT}kbit burst ${UPLOAD_BURST} cburst ${UPLOAD_BURST} quantum 1500
-        $TC_BIN filter del dev "$TC_DEV" parent 1: protocol ip prio $MINOR u32 2>/dev/null || true
-        $TC_BIN filter add dev "$TC_DEV" parent 1: protocol ip prio $MINOR u32 match ip dst ${client_ip}/32 flowid 1:$MINOR
+        $TC_BIN filter del dev "$TC_DEV" parent 1: protocol $PROTO prio $MINOR u32 2>/dev/null || true
+        $TC_BIN filter add dev "$TC_DEV" parent 1: protocol $PROTO prio $MINOR u32 match $MATCH dst ${client_ip}${PREFIX} flowid 1:$MINOR
         log_message "INFO" "达量限速更新 用户虚拟IP $client_ip 上传 ${upload_kb}KB/s classid 1:$MINOR"
     else
+        # 取消上传限速：v4/v6 过滤器都清掉，再删类（同一客户端可能两种协议共用该类）
         $TC_BIN filter del dev "$TC_DEV" parent 1: protocol ip prio $MINOR u32 2>/dev/null || true
+        $TC_BIN filter del dev "$TC_DEV" parent 1: protocol ipv6 prio $MINOR u32 2>/dev/null || true
         $TC_BIN class del dev "$TC_DEV" classid 1:$MINOR 2>/dev/null || true
         log_message "INFO" "达量限速更新 用户虚拟IP $client_ip 取消上传限速"
     fi
@@ -89,11 +114,13 @@ printf '%b' "$CHANGES" | while read -r client_ip upload_kb download_kb; do
         DOWNLOAD_KBIT=$((download_kb * 8))
         DOWNLOAD_BURST=$((DOWNLOAD_KBIT * 12))
         [ "$DOWNLOAD_BURST" -lt 3000 ] && DOWNLOAD_BURST=3000
-        $TC_BIN filter del dev "$TC_DEV" parent ffff: protocol ip prio $MINOR u32 2>/dev/null || true
-        $TC_BIN filter add dev "$TC_DEV" parent ffff: protocol ip prio $MINOR u32 match ip src ${client_ip}/32 police rate ${DOWNLOAD_KBIT}kbit burst ${DOWNLOAD_BURST} drop flowid :1
-        log_message "INFO" "达量限速更新 用户虚拟IP $client_ip 下载 ${download_kb}KB/s"
+        $TC_BIN filter del dev "$TC_DEV" parent ffff: protocol $PROTO prio $MINOR u32 2>/dev/null || true
+        $TC_BIN filter add dev "$TC_DEV" parent ffff: protocol $PROTO prio $MINOR u32 match $MATCH src ${client_ip}${PREFIX} police rate ${DOWNLOAD_KBIT}kbit burst ${DOWNLOAD_BURST} drop flowid :1
+        log_message "INFO" "达量限速更新 用户虚拟IP $client_ip 下载 ${download_kb}KB/s classid 1:$MINOR"
     else
+        # 取消下载限速：清掉主接口 ingress 上的 police 过滤器
         $TC_BIN filter del dev "$TC_DEV" parent ffff: protocol ip prio $MINOR u32 2>/dev/null || true
+        $TC_BIN filter del dev "$TC_DEV" parent ffff: protocol ipv6 prio $MINOR u32 2>/dev/null || true
         log_message "INFO" "达量限速更新 用户虚拟IP $client_ip 取消下载限速"
     fi
 done

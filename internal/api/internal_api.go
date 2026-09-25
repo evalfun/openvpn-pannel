@@ -107,10 +107,11 @@ func (a *App) UserAuthInternalHandler(c *gin.Context) {
 
 func (a *App) DelUserACLInternalHandler(c *gin.Context) {
 	requestData := map[string]string{
-		"username":        "",
-		"server_id":       "",
-		"real_ip_addr":    "",
-		"virtual_ip_addr": "",
+		"username":         "",
+		"server_id":        "",
+		"real_ip_addr":     "",
+		"virtual_ip_addr":  "",
+		"virtual_ip6_addr": "",
 	}
 	var err error
 	requestData, err = ParseInternalAPIData(requestData, c)
@@ -129,8 +130,13 @@ func (a *App) DelUserACLInternalHandler(c *gin.Context) {
 		return
 	}
 	virtualIPAddr := requestData["virtual_ip_addr"]
+	virtualIP6Addr := requestData["virtual_ip6_addr"]
+	primaryIPAddr := virtualIPAddr
+	if primaryIPAddr == "" {
+		primaryIPAddr = virtualIP6Addr
+	}
 	realIPAddr := requestData["real_ip_addr"]
-	aclList, err := a.daoManager.ListAddedACLByIP(virtualIPAddr, uint(serverID))
+	aclList, err := a.daoManager.ListAddedACLByIP(primaryIPAddr, uint(serverID))
 	addedACLString := ""
 	resultString := ""
 	if err == nil {
@@ -143,7 +149,7 @@ func (a *App) DelUserACLInternalHandler(c *gin.Context) {
 	}
 	a.daoManager.CreateEvent(uint(serverID), models.SERVER_EVENT_TYPE_DEL_ACL, realIPAddr, fmt.Sprintf("用户=%s 删除的ACL=%s", username, addedACLString))
 
-	err = a.daoManager.DeleteAddedACLByIP(virtualIPAddr, uint(serverID))
+	err = a.daoManager.DeleteAddedACLByIP(primaryIPAddr, uint(serverID))
 	if err != nil {
 		c.String(500, "result="+"删除ACL失败"+err.Error())
 		return
@@ -158,6 +164,7 @@ func (a *App) UserOnlineInternalHandler(c *gin.Context) {
 		"real_ip_addr":     "",
 		"virtual_ip_addr":  "",
 		"client_cert_name": "",
+		"virtual_ip6_addr": "",
 	}
 	var err error
 	requestData, err = ParseInternalAPIData(requestData, c)
@@ -177,8 +184,14 @@ func (a *App) UserOnlineInternalHandler(c *gin.Context) {
 	}
 	realIPAddr := requestData["real_ip_addr"]
 	virtualIPAddr := requestData["virtual_ip_addr"]
+	virtualIP6Addr := requestData["virtual_ip6_addr"]
 	clientCertName := requestData["client_cert_name"]
-	a.daoManager.CreateEvent(uint(serverID), models.SERVER_EVENT_TYPE_CLIENT_ONLINE, realIPAddr, fmt.Sprintf("证书=%s 用户=%s 虚拟IP=%s", clientCertName, username, virtualIPAddr))
+	// 主地址：有 IPv4 用 IPv4，否则用 IPv6（纯 IPv6 客户端也能被正确索引与回收）。
+	primaryIPAddr := virtualIPAddr
+	if primaryIPAddr == "" {
+		primaryIPAddr = virtualIP6Addr
+	}
+	a.daoManager.CreateEvent(uint(serverID), models.SERVER_EVENT_TYPE_CLIENT_ONLINE, realIPAddr, fmt.Sprintf("证书=%s 用户=%s 虚拟IP=%s 虚拟IPv6=%s", clientCertName, username, virtualIPAddr, virtualIP6Addr))
 	// 计算并记录本次会话生效的限速，供运行时“仅对限速变化的客户端重设 tc”判断是否变化。
 	var appliedUploadKB, appliedDownloadKB uint64
 	if userModel, err := a.daoManager.GetUserByUsername(string(username)); err == nil {
@@ -190,7 +203,8 @@ func (a *App) UserOnlineInternalHandler(c *gin.Context) {
 		}
 	}
 	err = a.daoManager.CreateConnectedClientInfoRecord(&models.ConnectedClientInfoRecord{
-		VirtualIPAddr:   virtualIPAddr,
+		VirtualIPAddr:   primaryIPAddr,
+		VirtualIP6Addr:  virtualIP6Addr,
 		ServerID:        uint(serverID),
 		Username:        string(username),
 		UploadLimitKB:   appliedUploadKB,
@@ -226,6 +240,7 @@ func (a *App) UserOfflineInternalHandler(c *gin.Context) {
 		"server_id":        "",
 		"real_ip_addr":     "",
 		"virtual_ip_addr":  "",
+		"virtual_ip6_addr": "",
 		"client_cert_name": "",
 		"bytes_send":       "",
 		"bytes_received":   "",
@@ -248,7 +263,12 @@ func (a *App) UserOfflineInternalHandler(c *gin.Context) {
 	}
 	realIPAddr := requestData["real_ip_addr"]
 	virtualIPAddr := requestData["virtual_ip_addr"]
+	virtualIP6Addr := requestData["virtual_ip6_addr"]
 	clientCertName := requestData["client_cert_name"]
+	primaryIPAddr := virtualIPAddr
+	if primaryIPAddr == "" {
+		primaryIPAddr = virtualIP6Addr
+	}
 	bytesSend, err := strconv.ParseUint(requestData["bytes_send"], 10, 64)
 	if err != nil {
 		c.String(400, "result="+"bytes_send参数错误")
@@ -259,16 +279,16 @@ func (a *App) UserOfflineInternalHandler(c *gin.Context) {
 		c.String(400, "result="+"bytes_received参数错误")
 		return
 	}
-	a.daoManager.CreateEvent(uint(serverID), models.SERVER_EVENT_TYPE_CLIENT_OFFLINE, realIPAddr, fmt.Sprintf("证书=%s 用户=%s IP=%s 虚拟IP=%s 发送=%s 接收=%s 发送字节数=%d 接收字节数=%d",
-		clientCertName, username, realIPAddr, virtualIPAddr, getReadableFileSize(bytesSend), getReadableFileSize(bytesReceived), bytesSend, bytesReceived))
+	a.daoManager.CreateEvent(uint(serverID), models.SERVER_EVENT_TYPE_CLIENT_OFFLINE, realIPAddr, fmt.Sprintf("证书=%s 用户=%s IP=%s 虚拟IP=%s 虚拟IPv6=%s 发送=%s 接收=%s 发送字节数=%d 接收字节数=%d",
+		clientCertName, username, realIPAddr, virtualIPAddr, virtualIP6Addr, getReadableFileSize(bytesSend), getReadableFileSize(bytesReceived), bytesSend, bytesReceived))
 	// 启用二次认证的客户端：记录下线事件。
 	// 若二次认证已通过但未在客户端页面登出（即还没有“二次认证下线”），
 	// VPN 会话结束时先补记一条“二次认证下线”，紧接着记录“一次认证下线”。
 	if userModel, uErr := a.daoManager.GetUserByUsername(string(username)); uErr == nil && userModel.MFAType != models.MFA_TYPE_NONE {
-		if rec, rErr := a.daoManager.GetConnectedClientInfoRecord(uint(serverID), virtualIPAddr); rErr == nil && rec.MFAVerified {
-			a.daoManager.CreateEvent(uint(serverID), models.SERVER_EVENT_TYPE_SECOND_AUTH_LOGOUT, realIPAddr, fmt.Sprintf("二次认证下线(随VPN会话结束) 证书=%s 用户=%s 虚拟IP=%s", clientCertName, username, virtualIPAddr))
+		if rec, rErr := a.daoManager.GetConnectedClientInfoRecord(uint(serverID), primaryIPAddr); rErr == nil && rec.MFAVerified {
+			a.daoManager.CreateEvent(uint(serverID), models.SERVER_EVENT_TYPE_SECOND_AUTH_LOGOUT, realIPAddr, fmt.Sprintf("二次认证下线(随VPN会话结束) 证书=%s 用户=%s 虚拟IP=%s", clientCertName, username, primaryIPAddr))
 		}
-		a.daoManager.CreateEvent(uint(serverID), models.SERVER_EVENT_TYPE_FIRST_AUTH_LOGOUT, realIPAddr, fmt.Sprintf("一次认证下线 证书=%s 用户=%s 虚拟IP=%s", clientCertName, username, virtualIPAddr))
+		a.daoManager.CreateEvent(uint(serverID), models.SERVER_EVENT_TYPE_FIRST_AUTH_LOGOUT, realIPAddr, fmt.Sprintf("一次认证下线 证书=%s 用户=%s 虚拟IP=%s", clientCertName, username, primaryIPAddr))
 	}
 
 	err = a.daoManager.UpdateUserTraffic(string(username), bytesSend, bytesReceived)
@@ -280,7 +300,7 @@ func (a *App) UserOfflineInternalHandler(c *gin.Context) {
 		log.Println("更新用户周期流量失败: ", err.Error())
 	}
 
-	err = a.daoManager.DeleteConnectedClientInfoRecord(virtualIPAddr, uint(serverID))
+	err = a.daoManager.DeleteConnectedClientInfoRecord(primaryIPAddr, uint(serverID))
 	if err != nil {
 		log.Println("删除用户在线信息失败" + err.Error())
 		return
@@ -290,10 +310,11 @@ func (a *App) UserOfflineInternalHandler(c *gin.Context) {
 
 func (a *App) GetUserACLInternalHandler(c *gin.Context) {
 	requestData := map[string]string{
-		"username":        "",
-		"server_id":       "",
-		"real_ip_addr":    "",
-		"virtual_ip_addr": "",
+		"username":         "",
+		"server_id":        "",
+		"real_ip_addr":     "",
+		"virtual_ip_addr":  "",
+		"virtual_ip6_addr": "",
 	}
 	var err error
 	requestData, err = ParseInternalAPIData(requestData, c)
@@ -313,6 +334,11 @@ func (a *App) GetUserACLInternalHandler(c *gin.Context) {
 	}
 	realIPAddr := requestData["real_ip_addr"]
 	virtualIPAddr := requestData["virtual_ip_addr"]
+	virtualIP6Addr := requestData["virtual_ip6_addr"]
+	primaryIPAddr := virtualIPAddr
+	if primaryIPAddr == "" {
+		primaryIPAddr = virtualIP6Addr
+	}
 
 	//log.Println(serverID, username, realIPAddr)
 	userModel, err := a.daoManager.GetUserByUsername(string(username))
@@ -344,10 +370,11 @@ func (a *App) GetUserACLInternalHandler(c *gin.Context) {
 		addedACLString = fmt.Sprintf("%s[%s] ", addedACLString, k)
 		resultString = fmt.Sprintf("%s%s\n", resultString, k)
 		addedACLRecordList = append(addedACLRecordList, &models.AddedServerACLRecord{
-			ACLType:       v.Type,
-			ACLValue:      v.Value,
-			VirtualIPAddr: virtualIPAddr,
-			ServerID:      uint(serverID),
+			ACLType:        v.Type,
+			ACLValue:       v.Value,
+			VirtualIPAddr:  primaryIPAddr,
+			VirtualIP6Addr: virtualIP6Addr,
+			ServerID:       uint(serverID),
 		})
 	}
 	a.daoManager.CreateEvent(uint(serverID), models.SERVER_EVENT_TYPE_ADD_ACL, realIPAddr, fmt.Sprintf("用户=%s 添加的ACL=%s", username, addedACLString))

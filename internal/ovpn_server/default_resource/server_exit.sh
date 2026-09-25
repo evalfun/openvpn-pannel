@@ -48,6 +48,11 @@ sudo /usr/sbin/iptables -S 2>/dev/null | awk -v p="ov${SERVER_ID}_c_" '$1=="-N" 
     sudo /usr/sbin/iptables -X "$_sub" 2>/dev/null || true
 done
 
+sudo /usr/sbin/ip6tables -S 2>/dev/null | awk -v p="ov${SERVER_ID}_6c_" '$1=="-N" && index($2,p)==1 {print $2}' | while read -r _sub; do
+    sudo /usr/sbin/ip6tables -F "$_sub" 2>/dev/null || true
+    sudo /usr/sbin/ip6tables -X "$_sub" 2>/dev/null || true
+done
+
 $IPSET list -n 2>/dev/null | grep -E "^ov${SERVER_ID}_" | while read -r _set; do
     $IPSET destroy "$_set" 2>/dev/null || true
 done

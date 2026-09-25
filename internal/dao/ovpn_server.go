@@ -572,11 +572,11 @@ func (um *DaoManager) ListConnectedClientInfoRecordByUsername(username string) (
 	return infoList, err
 }
 
-// ListConnectedClientInfoRecordByVirtualIP 按虚拟 IP 列出所有在线会话（可能属于不同服务器）。
-// 供客户端自助页面依据 HTTP 来源 IP 识别客户端使用。
+// ListConnectedClientInfoRecordByVirtualIP 按虚拟 IP（IPv4 或 IPv6）列出所有在线会话
+// （可能属于不同服务器）。供客户端自助页面依据 HTTP 来源 IP 识别客户端使用。
 func (um *DaoManager) ListConnectedClientInfoRecordByVirtualIP(virtualIPAddr string) ([]*models.ConnectedClientInfoRecord, error) {
 	var infoList []*models.ConnectedClientInfoRecord
-	err := um.DB.Where("virtual_ip_addr = ?", virtualIPAddr).Find(&infoList).Error
+	err := um.DB.Where("virtual_ip_addr = ? or virtual_ip6_addr = ?", virtualIPAddr, virtualIPAddr).Find(&infoList).Error
 	return infoList, err
 }
 

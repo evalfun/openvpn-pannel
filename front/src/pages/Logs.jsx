@@ -640,6 +640,11 @@ const Logs = () => {
                                         <Typography variant="body2">
                                             <strong>管理接口版本：</strong> {statusData.management_version || 'N/A'}
                                         </Typography>
+                                        {statusData.management_available === false && (
+                                            <Alert severity="warning" sx={{ marginTop: 1 }}>
+                                                该服务器不支持管理接口，状态来自状态文件，版本信息不可用，“断开连接”功能不可用。
+                                            </Alert>
+                                        )}
                                     </Stack>
                                 </Box>
 
@@ -667,6 +672,9 @@ const Logs = () => {
                                                                 <Box>
                                                                     <Typography variant="caption" color="textSecondary">虚拟地址</Typography>
                                                                     <Typography variant="body2">{client.virtual_ip_addr?.join(', ') || 'N/A'}</Typography>
+                                                                    {client.virtual_ip6_addr && client.virtual_ip6_addr.length > 0 && (
+                                                                        <Typography variant="body2">{client.virtual_ip6_addr.join(', ')}</Typography>
+                                                                    )}
                                                                 </Box>
                                                                 <Box>
                                                                     <Typography variant="caption" color="textSecondary">数据流量</Typography>
@@ -688,6 +696,7 @@ const Logs = () => {
                                                                     {client.acl_list && client.acl_list.length > 0 ? (
                                                                         <Box sx={{ position: 'relative', marginTop: 0.5 }}>
                                                                             <Tooltip 
+                                                                                placement="right"
                                                                                 title={
                                                                                     <Box sx={{ whiteSpace: 'pre-wrap', maxHeight: '300px', overflow: 'auto' }}>
                                                                                         {client.acl_list.join('\n')}
@@ -721,7 +730,7 @@ const Logs = () => {
                                                                     size="small"
                                                                     fullWidth
                                                                     onClick={() => handleKillClient(client.real_ip_addr)}
-                                                                    disabled={killLoading === client.real_ip_addr}
+                                                                    disabled={killLoading === client.real_ip_addr || statusData.management_available === false}
                                                                 >
                                                                     {killLoading === client.real_ip_addr ? (
                                                                         <CircularProgress size={20} />
@@ -760,6 +769,12 @@ const Logs = () => {
                                                                 </TableCell>
                                                                 <TableCell sx={{ paddingTop: 0.5, paddingBottom: 0.5 }}>
                                                                     {client.virtual_ip_addr?.join(', ') || 'N/A'}
+                                                                    {client.virtual_ip6_addr && client.virtual_ip6_addr.length > 0 && (
+                                                                        <>
+                                                                            <br />
+                                                                            {client.virtual_ip6_addr.join(', ')}
+                                                                        </>
+                                                                    )}
                                                                 </TableCell>
                                                                 <TableCell sx={{ paddingTop: 0.5, paddingBottom: 0.5 }} align="right">
                                                                     <Typography variant="body2">
@@ -779,6 +794,7 @@ const Logs = () => {
                                                                     {client.acl_list && client.acl_list.length > 0 ? (
                                                                         <Box sx={{ position: 'relative' }}>
                                                                             <Tooltip 
+                                                                                placement="right"
                                                                                 title={
                                                                                     <Box sx={{ whiteSpace: 'pre-wrap', maxHeight: '300px', overflow: 'auto' }}>
                                                                                         {client.acl_list.join('\n')}
@@ -816,7 +832,7 @@ const Logs = () => {
                                                                         color="error"
                                                                         size="small"
                                                                         onClick={() => handleKillClient(client.real_ip_addr)}
-                                                                        disabled={killLoading === client.real_ip_addr}
+                                                                        disabled={killLoading === client.real_ip_addr || statusData.management_available === false}
                                                                         sx={{ minWidth: '80px' }}
                                                                     >
                                                                         {killLoading === client.real_ip_addr ? (
@@ -1093,10 +1109,12 @@ const Logs = () => {
                 <Box
                     sx={{
                         backgroundColor: 'white',
-                        borderRadius: '8px',
+                        borderRadius: isMobile ? 0 : '8px',
                         padding: 3,
-                        maxWidth: '500px',
-                        maxHeight: '80vh',
+                        width: isMobile ? '100vw' : '600px',
+                        maxWidth: isMobile ? '100vw' : '600px',
+                        height: isMobile ? '100vh' : 'auto',
+                        maxHeight: isMobile ? '100vh' : '80vh',
                         overflow: 'auto',
                         boxShadow: '0 3px 5px -1px rgba(0,0,0,0.2)'
                     }}

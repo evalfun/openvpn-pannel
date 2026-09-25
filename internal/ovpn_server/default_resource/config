@@ -8,7 +8,8 @@ key {{.WorkingDir}}{{.MiscConfig.ServerKeyFileName}}  # This file should be kept
 dh {{.WorkingDir}}{{.MiscConfig.DHFileName}}
 data-ciphers {{.ServerConfig.DataCipher}}
 server {{.ServerConfig.ServerCIDR}}
-topology {{.ServerConfig.Topology}}
+{{if .ServerConfig.ServerCIDR6}}server-ipv6 {{.ServerConfig.ServerCIDR6}}
+{{end}}topology {{.ServerConfig.Topology}}
 management {{.WorkingDir}}{{.MiscConfig.ManagementSocket}} unix
 
 {{if .ServerConfig.DuplicateCN}}duplicate-cn {{else}};duplicate-cn {{end}}
@@ -24,7 +25,7 @@ auth-user-pass-verify {{.WorkingDir}}{{.MiscConfig.ClientAuthScriptName}} via-en
 ;group openvpn
 persist-key
 persist-tun
-status {{.WorkingDir}}{{.MiscConfig.StatusFileName}}
+status {{.WorkingDir}}{{.MiscConfig.StatusFileName}} 20
 log-append  {{.WorkingDir}}{{.MiscConfig.ServerLog}}
 verb 3
 explicit-exit-notify 1

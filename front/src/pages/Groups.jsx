@@ -30,6 +30,9 @@ import {
   Checkbox,
   FormGroup,
   FormControlLabel,
+  Radio,
+  RadioGroup,
+  FormLabel,
   List,
   ListItem,
   ListItemButton,
@@ -257,25 +260,6 @@ const Groups = () => {
       }
     } catch (err) {
       setAddUserDialogError(err.response?.data?.error || '添加用户失败');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleRemoveUser = async (username) => {
-    try {
-      setIsLoading(true);
-      const response = await groupAPI.removeUserFromGroup({
-        group: selectedGroup.name,
-        user: username,
-      });
-      if (response.data.result === 'success') {
-        setGroupManageSuccess('用户移除成功');
-        setSelectedGroupUsers(prev => prev.filter(u => u !== username));
-        await loadGroupUsers(selectedGroup.name, groupUsersPage, groupUsersPageSize);
-      }
-    } catch (err) {
-      setGroupManageError(err.response?.data?.error || '移除用户失败');
     } finally {
       setIsLoading(false);
     }
@@ -537,7 +521,7 @@ const Groups = () => {
         </Box>
       ) : (
       <TableContainer component={Paper} sx={{ marginBottom: 2 }}>
-        <Table>
+        <Table size="small">
           <TableHead sx={{ backgroundColor: '#f5f5f5' }}>
             <TableRow>
               <TableCell sx={{ fontWeight: 'bold' }}>用户组ID</TableCell>
@@ -553,12 +537,12 @@ const Groups = () => {
             {groups.length > 0 ? (
               groups.map((group) => (
                 <TableRow key={group.ID} hover>
-                  <TableCell sx={{paddingTop:1, paddingBottom:1}} >{group.ID}</TableCell>
-                  <TableCell sx={{paddingTop:1, paddingBottom:1}} >{group.name}</TableCell>
+                  <TableCell sx={{paddingTop:1.3, paddingBottom:1.3}} >{group.ID}</TableCell>
+                  <TableCell sx={{paddingTop:0, paddingBottom:0}} >{group.name}</TableCell>
                   <TableCell 
                     sx={{
-                      paddingTop:1, 
-                      paddingBottom:1,
+                      paddingTop:0, 
+                      paddingBottom:0,
                       maxWidth: '160px',
                       overflow: 'hidden',
                       textOverflow: 'ellipsis',
@@ -579,12 +563,12 @@ const Groups = () => {
                   >
                     {group.description || '-'}
                   </TableCell>
-                  <TableCell sx={{paddingTop:1, paddingBottom:1}}>
+                  <TableCell sx={{paddingTop:0, paddingBottom:0}}>
                     {(!group.upload_limit_kb && !group.download_limit_kb)
                       ? '不限速'
                       : `↑${group.upload_limit_kb || 0} ↓${group.download_limit_kb || 0} KB/s`}
                   </TableCell>
-                  <TableCell sx={{paddingTop:1, paddingBottom:1}}  >
+                  <TableCell sx={{paddingTop:0, paddingBottom:0}}  >
                     <Button
                       size="small"
                       variant="outlined"
@@ -839,16 +823,6 @@ const Groups = () => {
                           <Typography variant="body2" color="text.secondary" sx={{ marginTop: 0.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                             {user.description || '-'}
                           </Typography>
-                          <Button
-                            sx={{ marginTop: 1.5 }}
-                            size="small"
-                            variant="outlined"
-                            color="error"
-                            startIcon={<DeleteIcon />}
-                            onClick={() => handleRemoveUser(user.username)}
-                          >
-                            删除
-                          </Button>
                         </CardContent>
                       </Card>
                     ))
@@ -874,41 +848,27 @@ const Groups = () => {
                       <TableCell sx={{ fontWeight: 'bold' }}>用户ID</TableCell>
                       <TableCell sx={{ fontWeight: 'bold' }}>用户名</TableCell>
                       <TableCell sx={{ fontWeight: 'bold' }}>描述</TableCell>
-                      <TableCell sx={{ fontWeight: 'bold' }}>
-                        操作
-                      </TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
                     {groupUsers.length > 0 ? (
                       groupUsers.map((user) => (
                         <TableRow key={user.ID} hover>
-                          <TableCell sx={{paddingTop:1, paddingBottom:1, width: '50px'}}>
+                          <TableCell sx={{padding: 0, width: '50px'}}>
                             <Checkbox
                               size="small"
                               checked={selectedGroupUsers.includes(user.username)}
                               onChange={() => handleSelectGroupUser(user.username)}
                             />
                           </TableCell>
-                          <TableCell  sx={{paddingTop:1, paddingBottom:1}} >{user.ID}</TableCell>
-                          <TableCell  sx={{paddingTop:1, paddingBottom:1}} >{user.username}</TableCell>
-                          <TableCell  sx={{paddingTop:1, paddingBottom:1, maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}} >{user.description || '-'}</TableCell>
-                          <TableCell  sx={{paddingTop:1, paddingBottom:1}}  >
-                            <Button
-                              size="small"
-                              variant="outlined"
-                              color="error"
-                              startIcon={<DeleteIcon />}
-                              onClick={() => handleRemoveUser(user.username)}
-                            >
-                              删除
-                            </Button>
-                          </TableCell>
+                          <TableCell  sx={{padding: 1}} >{user.ID}</TableCell>
+                          <TableCell  sx={{padding: 1}} >{user.username}</TableCell>
+                          <TableCell  sx={{padding: 1, maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}} >{user.description || '-'}</TableCell>
                         </TableRow>
                       ))
                     ) : (
                       <TableRow>
-                        <TableCell colSpan={5} align="center">
+                        <TableCell colSpan={4} align="center">
                           该用户组中暂无用户
                         </TableCell>
                       </TableRow>
@@ -1390,16 +1350,16 @@ const Groups = () => {
             </Alert>
           )}
           <Stack spacing={2} sx={{ paddingTop: 2 }}>
-            <FormControl fullWidth>
-              <InputLabel>类型</InputLabel>
-              <Select
-                value={aclFormData.type}
-                label="类型"
-                onChange={(e) => setAclFormData({ ...aclFormData, type: e.target.value })}
+            <FormControl>
+              <FormLabel>类型</FormLabel>
+              <RadioGroup
+                row
+                value={String(aclFormData.type)}
+                onChange={(e) => setAclFormData({ ...aclFormData, type: Number(e.target.value) })}
               >
-                <MenuItem value={4}>IPv4</MenuItem>
-                <MenuItem value={6}>IPv6</MenuItem>
-              </Select>
+                <FormControlLabel value="4" control={<Radio />} label="IPv4" />
+                <FormControlLabel value="6" control={<Radio />} label="IPv6" />
+              </RadioGroup>
             </FormControl>
             <TextField
               fullWidth

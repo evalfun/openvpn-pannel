@@ -42,6 +42,11 @@
 - **下载**：客户端 → 服务器（面板/服务端视角的“接收”，`tc` 入方向）。
 - 流量统计中的 `↑` 为上传、`↓` 为下载，含义与上面一致。
 
+> 下载（`tc` 入方向）无法直接整形：优先把流量 `redirect` 到 `ifb<服务器ID>` 设备再用 HTB 整形
+> （依赖内核 `ifb` + `act_mirred`，OpenWrt 上即 `kmod-ifb` + `kmod-sched-act-mirred`）；
+> 若不可用则回退到 ingress `police`（依赖 `act_police`）；两者都缺失时会记录 WARNING 并跳过下载限速，
+> 上传限速不受影响。
+
 ---
 
 ## 2. 快速开始
@@ -215,6 +220,7 @@ done
 | 协议 | `udp` 或 `tcp` | `udp` |
 | 拓扑 | 一般为 `subnet` | `subnet` |
 | 服务器网段 | 网络地址 + 掩码 | `10.8.0.0 255.255.255.0` |
+| 服务器 IPv6 网段 | 对应配置里的 `server-ipv6`，留空表示不启用 IPv6 | `fc00:2048:1024::/64` |
 | 心跳配置 | `keepalive` | `10 60` |
 | 数据加密算法 | `data-ciphers`，多选/手动输入，以 `:` 分隔 | `AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305` |
 | 自动启动 | 面板启动时自动拉起该实例 | 开 |
@@ -223,6 +229,17 @@ done
 | DH 参数 | 见第 10 节，可一键生成（RFC 3526 标准 MODP 组） | 点“一键生成” |
 | TLS-Auth | 见第 10 节，可用 openvpn 一键生成 | 点“用 openvpn 生成 ta.key” |
 | 其他配置 | 追加到 `server.conf` 的原始配置行 | `push "redirect-gateway def1"` |
+
+- 常用其他配置
+
+|配置内容|说明|
+|---|---|
+|`mssfix 1308 `| TCP MSS钳制 |
+|`push "route 10.0.2.0 255.255.255.0" ` | 推送ipv4路由 |
+|`push "route-ipv6 fc00:131::/64"     ` | 推送ipv6路由 |
+|`push "dhcp-option DNS [IP 網址]"    ` | 推送DNS地址  |
+|`push "redirect-gateway def1"        ` | 推送默认网关 |
+
 
 - **客户端配置（CCD）**：按“客户端证书名称”下发；实例运行中修改会实时写入 `ccd` 目录。
 - **权限**：分“用户权限”和“用户组权限”，各有允许/拒绝，详见第 6 节。
@@ -314,6 +331,31 @@ curl http://10.8.0.1:8088/logout         # 登出并回收 ACL
 **登录限流**：为防止密码与动态验证码被快速暴力枚举，同一用户的**登录密码尝试**与**MFA 验证码尝试**
 各自有 **2 秒冷却**：2 秒内的重复尝试会收到 HTTP 429（`retry_after` 为剩余秒数）。两类尝试使用独立的
 冷却计时，因此“输入密码 → 弹出验证码框 → 提交验证码”的正常两步登录不会被误伤。
+
+---
+
+### 5.9 IPv6 支持
+
+在“服务器管理”中为服务器填写 **服务器 IPv6 网段**（对应 OpenVPN 的 `server-ipv6`，如
+`fc00:2048:1024::/64`）即可为该实例启用 IPv6，留空则不启用。
+
+**是否开启的建议**：即使没有任何 IPv6 业务，也建议开启——否则接口上没有 IPv6 地址，
+客户端会认为本机没有 IPv6 网络，可能导致其正常的 IPv6 出公网流量异常。唯一的缺点是极少数
+完全禁用了 IPv6 的主机，因无法为接口配置 IPv6 地址而连接失败，此时才需要关闭（留空）。
+
+启用后：
+
+- **地址分配**：客户端除 IPv4 外还会从该网段获得一个 IPv6 虚拟地址（脚本读取 OpenVPN 的
+  `ifconfig_pool_remote_ip6` 环境变量）。**虚拟地址在会话期间不变**，因此识别与限速都以虚拟地址为准。
+- **ACL**：用户组/用户的 ACL 支持 `4#`(IPv4) 与 `6#`(IPv6 CIDR) 两类。iptables 版脚本分别通过
+  `iptables` 与 `ip6tables`（配合 `ipset family inet6`）下发与回收；nftables 版脚本在 `inet` 表内
+  分别用 `ipv4_addr` / `ipv6_addr` 集合处理，无需额外维护 ip6tables。
+- **带宽限速**：`tc` 同时对 IPv4 与 IPv6 生效。双栈客户端两种地址共用同一个 classid；
+  只有 IPv6 的客户端使用由 IPv6 地址推导的独立 classid。
+- **流量统计与客户端自助页面**：IPv6 会话同样计入流量统计，自助页面会额外显示“内网 IPv6”。
+- 二进制内置脚本、`nftables-scripts/generic/`、`nftables-scripts/openwrt/`、`doc-openwrt/`
+  四套脚本均已支持 IPv6。iptables 版依赖系统存在 `ip6tables`；若缺失，IPv6 ACL 会被跳过
+  并记录日志（IPv4 不受影响）。
 
 ---
 

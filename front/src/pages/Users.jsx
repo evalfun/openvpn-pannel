@@ -43,7 +43,7 @@ import VisibilityIcon from '@mui/icons-material/Visibility';
 import DeleteForeverIcon from '@mui/icons-material/DeleteForever';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
 import DownloadIcon from '@mui/icons-material/Download';
-import { userManageAPI, userServerPermAPI } from '../api';
+import { userManageAPI, userServerPermAPI, groupAPI } from '../api';
 
 // 用户限速策略，取值与后端 models.RATE_LIMIT_TYPE_* 一致
 const RATE_LIMIT_OPTIONS = [
@@ -153,6 +153,18 @@ const Users = () => {
   const [aclModalOpen, setAclModalOpen] = useState(false);
   const [selectedAclContent, setSelectedAclContent] = useState('');
   const [serverAclMap, setServerAclMap] = useState({});
+  // 用户信息弹窗 - 用户组管理
+  const [userGroupOptions, setUserGroupOptions] = useState([]); // 可选（全部）用户组
+  const [selectedUserGroups, setSelectedUserGroups] = useState([]); // 待移出的用户组名
+  const [groupActionLoading, setGroupActionLoading] = useState(false);
+  // 添加到用户组弹框（带搜索与分页）
+  const [openAddGroupDialog, setOpenAddGroupDialog] = useState(false);
+  const [addGroupSearchQuery, setAddGroupSearchQuery] = useState('');
+  const [addGroupPage, setAddGroupPage] = useState(1);
+  const [addGroupPageSize, setAddGroupPageSize] = useState(10);
+  const [addGroupCount, setAddGroupCount] = useState(0);
+  const [addGroupLoading, setAddGroupLoading] = useState(false);
+  const [selectedGroups, setSelectedGroups] = useState([]); // 待添加的用户组名
   
   const [formData, setFormData] = useState({
     username: '',
@@ -379,15 +391,20 @@ const Users = () => {
     }
   };
 
-  const handleResetTraffic = async (user) => {
-    if (!window.confirm(`确定要清除用户 ${user.username} 的流量记录吗？`)) {
+  const handleResetTrafficSelected = async () => {
+    if (selectedUserIds.length === 0) {
+      setError('请选择要清除流量的用户');
+      return;
+    }
+    if (!window.confirm(`确定要清除选中的 ${selectedUserIds.length} 个用户的流量记录吗？`)) {
       return;
     }
     try {
       setIsLoading(true);
-      const response = await userManageAPI.resetTraffic(user.id);
+      const response = await userManageAPI.resetTrafficBatch(selectedUserIds);
       if (response.data.result === 'success') {
         setSuccess('流量记录已清除');
+        setSelectedUserIds([]);
         reloadUsers();
       } else {
         setError(response.data.error || '清除流量记录失败');
@@ -451,13 +468,14 @@ const Users = () => {
     setUserInfoError('');
     setOpenUserInfoDialog(true);
     setUserInfoLoading(true);
+    setSelectedUserGroups([]);
     try {
       // 获取用户组信息
       const userInfoResponse = await userManageAPI.getUserDetailInfo(user.username);
       if (userInfoResponse.data.result === 'success') {
         setUserGroups(userInfoResponse.data.groups || []);
       }
-      
+
       // 获取用户服务器权限信息（包含acl）
       const permResponse = await userServerPermAPI.getUserServerPermissions(user.id);
       if (permResponse.data.result === 'success') {
@@ -472,6 +490,106 @@ const Users = () => {
       setUserInfoError('加载用户信息失败');
     } finally {
       setUserInfoLoading(false);
+    }
+  };
+
+  // 加载可选用户组（带搜索与分页），过滤掉用户已加入的组
+  const loadAddableGroups = async (pageNum = 1, pageSize = 10, query = '') => {
+    try {
+      setAddGroupLoading(true);
+      const res = await groupAPI.getGroupList(pageNum, pageSize, query);
+      if (res.data.result === 'success') {
+        const joined = new Set(userGroups.map((g) => g.name));
+        setUserGroupOptions((res.data.data || []).filter((g) => !joined.has(g.name)));
+        setAddGroupCount(res.data.count || 0);
+      }
+    } catch (err) {
+      console.error('加载可选用户组失败', err);
+    } finally {
+      setAddGroupLoading(false);
+    }
+  };
+
+  const handleOpenAddGroupDialog = async () => {
+    setAddGroupSearchQuery('');
+    setAddGroupPage(1);
+    setSelectedGroups([]);
+    setOpenAddGroupDialog(true);
+    await loadAddableGroups(1, addGroupPageSize, '');
+  };
+
+  // 重新加载当前查看用户的所属用户组
+  const reloadUserGroups = async () => {
+    if (!selectedUser) return;
+    const res = await userManageAPI.getUserDetailInfo(selectedUser.username);
+    if (res.data.result === 'success') {
+      setUserGroups(res.data.groups || []);
+    }
+  };
+
+  const handleAddUserToGroup = async () => {
+    if (selectedGroups.length === 0) {
+      setUserInfoError('请至少选择一个用户组');
+      return;
+    }
+    setGroupActionLoading(true);
+    setUserInfoError('');
+    try {
+      const res = await groupAPI.addUsersToGroup({ users: [selectedUser.username], group: selectedGroups[0] });
+      if (selectedGroups.length > 1) {
+        for (const groupName of selectedGroups.slice(1)) {
+          const r = await groupAPI.addUsersToGroup({ users: [selectedUser.username], group: groupName });
+          if (r.data.result !== 'success') {
+            setUserInfoError(r.data.error || `添加到用户组 ${groupName} 失败`);
+          }
+        }
+      }
+      if (res.data.result !== 'success') {
+        setUserInfoError(res.data.error || '添加到用户组失败');
+      }
+      setSelectedGroups([]);
+      setOpenAddGroupDialog(false);
+      await reloadUserGroups();
+    } catch (err) {
+      setUserInfoError(err.response?.data?.error || '添加到用户组失败');
+    } finally {
+      setGroupActionLoading(false);
+    }
+  };
+
+  const handleSelectUserGroup = (groupName) => {
+    setSelectedUserGroups((prev) =>
+      prev.includes(groupName) ? prev.filter((n) => n !== groupName) : [...prev, groupName]
+    );
+  };
+
+  const handleSelectAllUserGroups = (checked) => {
+    setSelectedUserGroups(checked ? userGroups.map((g) => g.name) : []);
+  };
+
+  const handleRemoveSelectedFromGroups = async () => {
+    if (selectedUserGroups.length === 0) {
+      setUserInfoError('请至少选择一个用户组');
+      return;
+    }
+    if (!window.confirm(`确定将用户 ${selectedUser?.username} 从选中的 ${selectedUserGroups.length} 个用户组移出吗？`)) {
+      return;
+    }
+    setGroupActionLoading(true);
+    setUserInfoError('');
+    try {
+      for (const groupName of selectedUserGroups) {
+        const res = await groupAPI.removeUserFromGroup({ user: selectedUser.username, group: groupName });
+        if (res.data.result !== 'success') {
+          setUserInfoError(res.data.error || `从用户组 ${groupName} 移出失败`);
+        }
+      }
+      setSelectedUserGroups([]);
+      await reloadUserGroups();
+    } catch (err) {
+      setUserInfoError(err.response?.data?.error || '移出用户组失败');
+    } finally {
+      setGroupActionLoading(false);
     }
   };
 
@@ -764,6 +882,17 @@ const Users = () => {
             批量删除 ({selectedUserIds.length})
           </Button>
         )}
+        {selectedUserIds.length > 0 && (
+          <Button
+            variant="contained"
+            color="warning"
+            startIcon={<DeleteForeverIcon />}
+            onClick={handleResetTrafficSelected}
+            disabled={isLoading}
+          >
+            清除流量 ({selectedUserIds.length})
+          </Button>
+        )}
         <Button
           variant="contained"
           color="success"
@@ -872,9 +1001,6 @@ const Users = () => {
                       <Button size="small" variant="outlined" startIcon={<EditIcon />} onClick={() => handleEditUser(user)}>
                         编辑
                       </Button>
-                      <Button size="small" variant="outlined" color="error" startIcon={<DeleteForeverIcon />} onClick={() => handleResetTraffic(user)}>
-                        清除流量
-                      </Button>
                     </Stack>
                   </CardContent>
                 </Card>
@@ -978,15 +1104,6 @@ const Users = () => {
                           onClick={() => handleEditUser(user)}
                         >
                           编辑
-                        </Button>
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          color="error"
-                          startIcon={<DeleteForeverIcon />}
-                          onClick={() => handleResetTraffic(user)}
-                        >
-                          清除流量
                         </Button>
                       </Stack>
                     </TableCell>
@@ -1327,26 +1444,79 @@ const Users = () => {
               {/* 用户组标签 */}
               {userInfoTabValue === 0 && (
                 <Box sx={{ marginTop: 2 }}>
+                  {/* 添加到用户组 + 批量移出 */}
+                  <Stack direction="row" spacing={1} alignItems="center" sx={{ marginBottom: 2, flexWrap: 'wrap', gap: 1 }}>
+                    <Button
+                      variant="contained"
+                      color="success"
+                      startIcon={<AddIcon />}
+                      onClick={handleOpenAddGroupDialog}
+                      disabled={groupActionLoading}
+                    >
+                      添加到用户组
+                    </Button>
+                    {selectedUserGroups.length > 0 && (
+                      <Button
+                        variant="contained"
+                        color="error"
+                        startIcon={<DeleteForeverIcon />}
+                        onClick={handleRemoveSelectedFromGroups}
+                        disabled={groupActionLoading}
+                      >
+                        批量移出 ({selectedUserGroups.length})
+                      </Button>
+                    )}
+                    {groupActionLoading && <CircularProgress size={20} />}
+                  </Stack>
+
                   {userGroups.length > 0 ? (
                     isMobile ? (
-                      userGroups.map((group) => (
-                        <Card key={group.ID} variant="outlined" sx={{ marginBottom: 1.5 }}>
-                          <CardContent sx={{ padding: 1.5, '&:last-child': { paddingBottom: 1.5 } }}>
-                            <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
-                              <Typography variant="subtitle1" sx={{ fontWeight: 600, wordBreak: 'break-all' }}>{group.name}</Typography>
-                              <Typography variant="caption" color="text.secondary">ID {group.ID}</Typography>
-                            </Stack>
-                            <Typography variant="body2" color="text.secondary" sx={{ marginTop: 0.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                              {group.description || '-'}
-                            </Typography>
-                          </CardContent>
-                        </Card>
-                      ))
+                      <>
+                        <Stack direction="row" alignItems="center" spacing={1} sx={{ marginBottom: 1 }}>
+                          <Checkbox
+                            size="small"
+                            indeterminate={selectedUserGroups.length > 0 && selectedUserGroups.length < userGroups.length}
+                            checked={userGroups.length > 0 && selectedUserGroups.length === userGroups.length}
+                            onChange={(e) => handleSelectAllUserGroups(e.target.checked)}
+                          />
+                          <Typography variant="body2" color="text.secondary">全选</Typography>
+                          {selectedUserGroups.length > 0 && (
+                            <Typography variant="body2" color="text.secondary">已选 {selectedUserGroups.length}</Typography>
+                          )}
+                        </Stack>
+                        {userGroups.map((group) => (
+                          <Card key={group.ID} variant="outlined" sx={{ marginBottom: 1.5 }}>
+                            <CardContent sx={{ padding: 1.5, '&:last-child': { paddingBottom: 1.5 } }}>
+                              <Stack direction="row" alignItems="center" spacing={1}>
+                                <Checkbox
+                                  size="small"
+                                  checked={selectedUserGroups.includes(group.name)}
+                                  onChange={() => handleSelectUserGroup(group.name)}
+                                  sx={{ padding: 0.5 }}
+                                />
+                                <Typography variant="subtitle1" sx={{ fontWeight: 600, flex: 1, wordBreak: 'break-all' }}>{group.name}</Typography>
+                                <Typography variant="caption" color="text.secondary">ID {group.ID}</Typography>
+                              </Stack>
+                              <Typography variant="body2" color="text.secondary" sx={{ marginTop: 0.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {group.description || '-'}
+                              </Typography>
+                            </CardContent>
+                          </Card>
+                        ))}
+                      </>
                     ) : (
                     <TableContainer component={Paper}>
                       <Table size="small">
                         <TableHead sx={{ backgroundColor: '#f5f5f5' }}>
                           <TableRow>
+                            <TableCell sx={{ fontWeight: 'bold', width: '50px' }}>
+                              <Checkbox
+                                size="small"
+                                indeterminate={selectedUserGroups.length > 0 && selectedUserGroups.length < userGroups.length}
+                                checked={userGroups.length > 0 && selectedUserGroups.length === userGroups.length}
+                                onChange={(e) => handleSelectAllUserGroups(e.target.checked)}
+                              />
+                            </TableCell>
                             <TableCell sx={{ fontWeight: 'bold' }}>用户组ID</TableCell>
                             <TableCell sx={{ fontWeight: 'bold' }}>用户组名称</TableCell>
                             <TableCell sx={{ fontWeight: 'bold' }}>描述</TableCell>
@@ -1355,9 +1525,16 @@ const Users = () => {
                         <TableBody>
                           {userGroups.map((group) => (
                             <TableRow key={group.ID} hover>
-                              <TableCell sx={{ paddingTop: 0.7, paddingBottom: 0.7 }}>{group.ID}</TableCell>
-                              <TableCell sx={{ paddingTop: 0.7, paddingBottom: 0.7 }}>{group.name}</TableCell>
-                              <TableCell sx={{ paddingTop: 0.7, paddingBottom: 0.7, maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{group.description || '-'}</TableCell>
+                              <TableCell sx={{ padding: 0, width: '50px' }}>
+                                <Checkbox
+                                  size="small"
+                                  checked={selectedUserGroups.includes(group.name)}
+                                  onChange={() => handleSelectUserGroup(group.name)}
+                                />
+                              </TableCell>
+                              <TableCell sx={{ padding: 1 }}>{group.ID}</TableCell>
+                              <TableCell sx={{ padding: 1 }}>{group.name}</TableCell>
+                              <TableCell sx={{ padding: 1, maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{group.description || '-'}</TableCell>
                             </TableRow>
                           ))}
                         </TableBody>
@@ -1384,6 +1561,147 @@ const Users = () => {
             setOpenUserInfoDialog(false);
             setUserInfoError('');
           }}>关闭</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* 添加到用户组对话框（带搜索与分页） */}
+      <Dialog
+        open={openAddGroupDialog}
+        onClose={() => setOpenAddGroupDialog(false)}
+        maxWidth={isMobile ? 'lg' : 'md'}
+        fullWidth
+        fullScreen={isMobile}
+      >
+        <DialogTitle>添加到用户组 - {selectedUser?.username}</DialogTitle>
+        <DialogContent sx={{ paddingTop: 2 }}>
+          {userInfoError && (
+            <Alert severity="error" sx={{ marginBottom: 2 }} onClose={() => setUserInfoError('')}>
+              {userInfoError}
+            </Alert>
+          )}
+          <Stack direction="row" spacing={1} sx={{ marginBottom: 2 }}>
+            <TextField
+              placeholder="搜索用户组名"
+              size="small"
+              value={addGroupSearchQuery}
+              onChange={(e) => setAddGroupSearchQuery(e.target.value)}
+              onKeyPress={(e) => {
+                if (e.key === 'Enter') {
+                  setAddGroupPage(1);
+                  loadAddableGroups(1, addGroupPageSize, addGroupSearchQuery);
+                }
+              }}
+              sx={{ minWidth: 200, flex: 1 }}
+            />
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={() => {
+                setAddGroupPage(1);
+                loadAddableGroups(1, addGroupPageSize, addGroupSearchQuery);
+              }}
+              disabled={addGroupLoading}
+            >
+              搜索
+            </Button>
+          </Stack>
+
+          {addGroupLoading && <CircularProgress sx={{ marginBottom: 2 }} />}
+
+          <TableContainer component={Paper} sx={{ marginBottom: 2 }}>
+            <Table size="small">
+              <TableHead sx={{ backgroundColor: '#f5f5f5' }}>
+                <TableRow>
+                  <TableCell sx={{ fontWeight: 'bold' }}>选择</TableCell>
+                  <TableCell sx={{ fontWeight: 'bold' }}>用户组ID</TableCell>
+                  <TableCell sx={{ fontWeight: 'bold' }}>用户组名</TableCell>
+                  <TableCell sx={{ fontWeight: 'bold' }}>描述</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {userGroupOptions.length > 0 ? (
+                  userGroupOptions.map((group) => (
+                    <TableRow key={group.ID} hover>
+                      <TableCell sx={{ padding: 0 }}>
+                        <Checkbox
+                          checked={selectedGroups.includes(group.name)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedGroups([...selectedGroups, group.name]);
+                            } else {
+                              setSelectedGroups(selectedGroups.filter((n) => n !== group.name));
+                            }
+                          }}
+                        />
+                      </TableCell>
+                      <TableCell sx={{ padding: 1 }}>{group.ID}</TableCell>
+                      <TableCell sx={{ padding: 1 }}>{group.name}</TableCell>
+                      <TableCell sx={{ padding: 1, maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {group.description || '无'}
+                      </TableCell>
+                    </TableRow>
+                  ))
+                ) : (
+                  <TableRow>
+                    <TableCell colSpan={4} align="center" sx={{ padding: 1 }}>
+                      {addGroupLoading ? '加载中...' : '没有可添加的用户组'}
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </TableContainer>
+
+          {addGroupCount > 0 && (
+            <Stack direction="row" spacing={2} alignItems="center">
+              <FormControl sx={{ minWidth: 120 }}>
+                <InputLabel>每页数量</InputLabel>
+                <Select
+                  value={addGroupPageSize}
+                  label="每页数量"
+                  onChange={async (e) => {
+                    setAddGroupPageSize(e.target.value);
+                    setAddGroupPage(1);
+                    await loadAddableGroups(1, e.target.value, addGroupSearchQuery);
+                  }}
+                  size="small"
+                  disabled={addGroupLoading}
+                >
+                  <MenuItem value={5}>5</MenuItem>
+                  <MenuItem value={10}>10</MenuItem>
+                  <MenuItem value={20}>20</MenuItem>
+                </Select>
+              </FormControl>
+              <Box sx={{ flex: 1, display: 'flex', justifyContent: 'center' }}>
+                <Pagination
+                  count={Math.max(1, Math.ceil(addGroupCount / addGroupPageSize))}
+                  page={addGroupPage}
+                  onChange={async (e, value) => {
+                    setAddGroupPage(value);
+                    await loadAddableGroups(value, addGroupPageSize, addGroupSearchQuery);
+                  }}
+                  color="primary"
+                  size="small"
+                  disabled={addGroupLoading}
+                />
+              </Box>
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => {
+            setOpenAddGroupDialog(false);
+            setSelectedGroups([]);
+            setUserInfoError('');
+          }}>取消</Button>
+          <Button
+            variant="contained"
+            color="success"
+            onClick={handleAddUserToGroup}
+            disabled={groupActionLoading || selectedGroups.length === 0}
+          >
+            添加 ({selectedGroups.length})
+          </Button>
         </DialogActions>
       </Dialog>
 

@@ -120,7 +120,12 @@ func (a *App) resolveClient(c *gin.Context) (*clientIdentity, error) {
 		if err != nil {
 			continue
 		}
-		if ipInServerCIDR(src, srv.ServerCIDR) {
+		// IPv6 来源按 server_cidr6 判定，IPv4 来源按 server_cidr 判定。
+		cidr := srv.ServerCIDR
+		if strings.Contains(src, ":") {
+			cidr = srv.ServerCIDR6
+		}
+		if cidr != "" && ipInServerCIDR(src, cidr) {
 			chosen, chosenServer = rec, srv
 			break
 		}
@@ -141,7 +146,9 @@ func (a *App) resolveClient(c *gin.Context) (*clientIdentity, error) {
 }
 
 // runUserACLScript 运行 acl_add.sh / acl_del.sh，通过标准输入传入客户端与 ACL 列表。
-func (a *App) runUserACLScript(resourceID string, serverModel *models.Server, virtualIP, username string, records []*models.AddedServerACLRecord) error {
+// virtualIP 为客户端主地址（有 IPv4 用 IPv4，否则 IPv6），virtualIP4/virtualIP6 分别为
+// 该客户端实际的 IPv4 / IPv6 虚拟地址，脚本据此分别下发 v4/v6 规则。
+func (a *App) runUserACLScript(resourceID string, serverModel *models.Server, virtualIP, virtualIP4, virtualIP6, username string, records []*models.AddedServerACLRecord) error {
 	resourceMap := a.PrepareResourceMap([]string{ovpnserver.RESOURCE_ID_MISC_CONFIG, resourceID})
 	script, ok := resourceMap[resourceID]
 	if !ok {
@@ -158,6 +165,8 @@ func (a *App) runUserACLScript(resourceID string, serverModel *models.Server, vi
 
 	var stdin strings.Builder
 	fmt.Fprintf(&stdin, "virtual_ip: %s\n", virtualIP)
+	fmt.Fprintf(&stdin, "virtual_ip4: %s\n", virtualIP4)
+	fmt.Fprintf(&stdin, "virtual_ip6: %s\n", virtualIP6)
 	fmt.Fprintf(&stdin, "username: %s\n", username)
 	for _, r := range records {
 		fmt.Fprintf(&stdin, "%d#%s\n", r.ACLType, r.ACLValue)
@@ -180,22 +189,27 @@ func (a *App) applyUserACL(id *clientIdentity) error {
 	}
 	records := make([]*models.AddedServerACLRecord, 0, len(aclList))
 	for _, acl := range aclList {
-		// 脚本仅处理 IPv4（type=4）
-		if acl.Type != 4 {
+		// 仅处理 IPv4(4) 与 IPv6(6) ACL，其它类型暂时忽略。
+		if acl.Type != 4 && acl.Type != 6 {
 			continue
 		}
 		records = append(records, &models.AddedServerACLRecord{
-			ServerID:      id.server.ID,
-			VirtualIPAddr: id.record.VirtualIPAddr,
-			ACLType:       acl.Type,
-			ACLValue:      acl.Value,
+			ServerID:       id.server.ID,
+			VirtualIPAddr:  id.record.VirtualIPAddr,
+			VirtualIP6Addr: id.record.VirtualIP6Addr,
+			ACLType:        acl.Type,
+			ACLValue:       acl.Value,
 		})
 	}
 	// 清理可能残留的记录，保证幂等
 	if err := a.daoManager.DeleteAddedACLByIP(id.record.VirtualIPAddr, id.server.ID); err != nil {
 		return err
 	}
-	if err := a.runUserACLScript(ovpnserver.RESOURCE_ID_ACL_ADD_SCRIPT, id.server, id.record.VirtualIPAddr, id.user.Username, records); err != nil {
+	virtualIP4 := id.record.VirtualIPAddr
+	if strings.Contains(virtualIP4, ":") {
+		virtualIP4 = ""
+	}
+	if err := a.runUserACLScript(ovpnserver.RESOURCE_ID_ACL_ADD_SCRIPT, id.server, id.record.VirtualIPAddr, virtualIP4, id.record.VirtualIP6Addr, id.user.Username, records); err != nil {
 		return err
 	}
 	if len(records) > 0 {
@@ -217,7 +231,11 @@ func (a *App) removeUserACL(id *clientIdentity) error {
 	if err != nil {
 		return err
 	}
-	if err := a.runUserACLScript(ovpnserver.RESOURCE_ID_ACL_DEL_SCRIPT, id.server, id.record.VirtualIPAddr, id.user.Username, records); err != nil {
+	virtualIP4 := id.record.VirtualIPAddr
+	if strings.Contains(virtualIP4, ":") {
+		virtualIP4 = ""
+	}
+	if err := a.runUserACLScript(ovpnserver.RESOURCE_ID_ACL_DEL_SCRIPT, id.server, id.record.VirtualIPAddr, virtualIP4, id.record.VirtualIP6Addr, id.user.Username, records); err != nil {
 		return err
 	}
 	if err := a.daoManager.DeleteAddedACLByIP(id.record.VirtualIPAddr, id.server.ID); err != nil {
@@ -235,12 +253,19 @@ func (a *App) clientPortalStatus(id *clientIdentity) gin.H {
 	uploadKB, downloadKB, _ := a.daoManager.ResolveUserRateLimit(id.user.ID, id.server.ID)
 
 	networks := make([]string, 0)
-	// 仅当已放行（未启用 MFA，或 MFA 已通过）时展示可访问网络
+	// 仅当已放行（未启用 MFA，或 MFA 已通过）时展示可访问网络。
+	// 这里读取的是“会话已实际下发的 ACL”（added_server_acl_records），而不是按用户/用户组实时计算：
+	// 用户/用户组 ACL 的变更需在下一次上线（或 MFA 登出再登录）后才会生效，页面应与实际放行保持一致。
 	loggedIn := id.user.MFAType == models.MFA_TYPE_NONE || id.record.MFAVerified
 	if loggedIn {
-		if aclList, err := a.daoManager.GetACLByUser(id.user.ID, id.server.ID); err == nil {
-			for _, acl := range aclList {
-				networks = append(networks, fmt.Sprintf("%d#%s", acl.Type, acl.Value))
+		if records, err := a.daoManager.ListAddedACLByIP(id.record.VirtualIPAddr, id.server.ID); err == nil {
+			seen := make(map[string]bool)
+			for _, r := range records {
+				key := fmt.Sprintf("%d#%s", r.ACLType, r.ACLValue)
+				if !seen[key] {
+					seen[key] = true
+					networks = append(networks, key)
+				}
 			}
 		}
 	}
@@ -262,6 +287,7 @@ func (a *App) clientPortalStatus(id *clientIdentity) gin.H {
 		"cert_name":         id.record.ClientCertName,
 		"public_ip":         publicIP,
 		"virtual_ip":        id.record.VirtualIPAddr,
+		"virtual_ip6":       id.record.VirtualIP6Addr,
 		"networks":          networks,
 		"upload_bytes":      id.record.ByteSent,
 		"download_bytes":    id.record.ByteReceived,
@@ -318,7 +344,7 @@ func (a *App) ClientPortalLoginCurl(c *gin.Context) {
 		c.String(401, "result=failed "+err.Error())
 		return
 	}
-	c.String(200, "result=success\nserver=%s\nusername=%s\nvirtual_ip=%s\n", id.server.Name, id.user.Username, id.record.VirtualIPAddr)
+	c.String(200, "result=success\nserver=%s\nusername=%s\nvirtual_ip=%s\nvirtual_ip6=%s\n", id.server.Name, id.user.Username, id.record.VirtualIPAddr, id.record.VirtualIP6Addr)
 }
 
 // verifyAndApplyMFA 对启用 MFA 的用户校验验证码并放行 ACL；未启用则直接成功。
@@ -484,6 +510,9 @@ const clientPortalHTML = `<!DOCTYPE html>
     var netsHtml = nets.length
       ? '<ul class="nets">' + nets.map(function (n) { return '<li>' + esc(n) + '</li>'; }).join('') + '</ul>'
       : '<span class="muted">无（未配置可访问网络）</span>';
+    var ipv6Row = d.virtual_ip6
+      ? '<div class="row"><span class="k">内网 IPv6</span><span class="v">' + esc(d.virtual_ip6) + '</span></div>'
+      : '';
 
     app.innerHTML =
       '<h1>VPN 连接信息</h1>' +
@@ -492,6 +521,7 @@ const clientPortalHTML = `<!DOCTYPE html>
       '<div class="row"><span class="k">证书名称</span><span class="v">' + esc(d.cert_name || '-') + '</span></div>' +
       '<div class="row"><span class="k">公网 IP</span><span class="v">' + esc(d.public_ip || '-') + '</span></div>' +
       '<div class="row"><span class="k">内网 IP</span><span class="v">' + esc(d.virtual_ip) + '</span></div>' +
+      ipv6Row +
       '<div class="row"><span class="k">客户端下载流量</span><span class="v">' + fmtBytes(d.upload_bytes) + '</span></div>' +
       '<div class="row"><span class="k">客户端上传流量</span><span class="v">' + fmtBytes(d.download_bytes) + '</span></div>' +
       '<div class="row"><span class="k">客户端下载限速</span><span class="v">' + fmtLimit(d.upload_limit_kb) + '</span></div>' +

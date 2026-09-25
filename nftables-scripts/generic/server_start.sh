@@ -25,6 +25,8 @@ log_message() {
 }
 
 # ACL 与转发控制全部由 nftables 承担；集合是 nft 原生能力，无需 ipset。
+# inet 表同时适用于 IPv4/IPv6：forward 基础链对两个地址族都生效，
+# 各 ACL 组在 acl 链内分别以 ip/ip6 规则放行（集合类型 ipv4_addr / ipv6_addr）。
 if ! $NFT list tables >/dev/null 2>&1; then
     log_message "WARN" "nft 不可用，ACL 与转发控制将无法生效（请安装 nftables 及相关内核模块）"
     exit 1

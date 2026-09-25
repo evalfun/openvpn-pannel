@@ -69,6 +69,12 @@ sudo /usr/sbin/ip6tables -D FORWARD -o $SERVER_INTERFACE -j ACCEPT      &> /dev/
 sudo /usr/sbin/ip6tables -N $CHAIN_NAME &> /dev/null
 sudo /usr/sbin/ip6tables -F $CHAIN_NAME 
 
+# 回收本服务器上次遗留的 IPv6 子链（ip6tables 独立于 iptables）
+sudo /usr/sbin/ip6tables -S 2>/dev/null | awk -v p="ov${SERVER_ID}_6c_" '$1=="-N" && index($2,p)==1 {print $2}' | while read -r _sub; do
+    sudo /usr/sbin/ip6tables -F "$_sub" 2>/dev/null || true
+    sudo /usr/sbin/ip6tables -X "$_sub" 2>/dev/null || true
+done
+
 sudo /usr/sbin/ip6tables -A $CHAIN_NAME -m state --state ESTABLISHED,RELATED -j ACCEPT
 
 sudo /usr/sbin/ip6tables -A FORWARD -i $SERVER_INTERFACE -j $CHAIN_NAME

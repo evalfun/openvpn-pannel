@@ -23,7 +23,7 @@ export default defineConfig({
     host: "0.0.0.0",
     proxy: {
       '/api': {
-        target: 'http://10.0.96.1:8700',
+        target: 'http://10.0.16.1:8089',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, '/api'),
         cookieDomainRewrite: {

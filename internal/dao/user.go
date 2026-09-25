@@ -207,9 +207,9 @@ func (um *DaoManager) SetUserMFA(userID uint, mfaType uint, data string) error {
 	if result.Error != nil {
 		return result.Error
 	}
-	if result.RowsAffected == 0 {
-		return gorm.ErrRecordNotFound
-	}
+	// if result.RowsAffected == 0 {
+	// 	return gorm.ErrRecordNotFound
+	// }
 	return nil
 }
 
@@ -252,6 +252,44 @@ func (um *DaoManager) ResetUserTraffic(userID uint) error {
 	if err != nil {
 		tx.Rollback()
 		return err
+	}
+	return tx.Commit().Error
+}
+
+// BatchResetUserTraffic 批量清除多个用户的流量记录（历史流量与当前在线会话流量）。
+// 任一用户失败则整体回滚，保证一致性。
+func (um *DaoManager) BatchResetUserTraffic(userIDList []uint) error {
+	if len(userIDList) == 0 {
+		return nil
+	}
+	tx := um.DB.Begin()
+	if tx.Error != nil {
+		return tx.Error
+	}
+	if err := tx.Model(&models.User{}).Where("id IN ?", userIDList).Updates(map[string]interface{}{
+		"upload_traffic":   0,
+		"download_traffic": 0,
+	}).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+	var users []*models.User
+	if err := tx.Where("id IN ?", userIDList).Find(&users).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+	usernames := make([]string, 0, len(users))
+	for _, u := range users {
+		usernames = append(usernames, u.Username)
+	}
+	if len(usernames) > 0 {
+		if err := tx.Model(&models.ConnectedClientInfoRecord{}).Where("username IN ?", usernames).Updates(map[string]interface{}{
+			"byte_received": 0,
+			"byte_sent":     0,
+		}).Error; err != nil {
+			tx.Rollback()
+			return err
+		}
 	}
 	return tx.Commit().Error
 }

@@ -308,6 +308,7 @@ type onlineUserItem struct {
 	ServerID          uint   `json:"server_id"`
 	ServerName        string `json:"server_name"`
 	VirtualIPAddr     string `json:"virtual_ip_addr"`
+	VirtualIP6Addr    string `json:"virtual_ip6_addr"`
 	SessionUpload     uint64 `json:"session_upload"`
 	SessionDownload   uint64 `json:"session_download"`
 	CycleUpload       uint64 `json:"cycle_upload"`
@@ -399,6 +400,7 @@ func (a *App) ListOnlineUserHandler(c *gin.Context, user *models.User) {
 			ServerID:          record.ServerID,
 			ServerName:        serverNameMap[record.ServerID],
 			VirtualIPAddr:     record.VirtualIPAddr,
+			VirtualIP6Addr:    record.VirtualIP6Addr,
 			SessionUpload:     record.ByteSent,
 			SessionDownload:   record.ByteReceived,
 			CycleUpload:       cycleUpload,

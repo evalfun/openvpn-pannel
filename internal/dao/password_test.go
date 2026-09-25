@@ -74,3 +74,57 @@ func TestUpdateUserPasswordUsesBcrypt(t *testing.T) {
 		t.Fatalf("login with new password: %v", err)
 	}
 }
+
+// TestBatchResetUserTraffic 验证批量清除流量：历史流量与在线会话流量同时归零，且不影响未选中的用户。
+func TestBatchResetUserTraffic(t *testing.T) {
+	dm := newTestDaoManager(t)
+	for _, n := range []string{"u1", "u2", "u3"} {
+		if err := dm.CreateUser(n, "pw", "", models.RATE_LIMIT_TYPE_NONE, 0, 0); err != nil {
+			t.Fatalf("create %s: %v", n, err)
+		}
+	}
+	u1 := mustUser(t, dm, "u1")
+	u2 := mustUser(t, dm, "u2")
+	u3 := mustUser(t, dm, "u3")
+
+	for _, u := range []*models.User{u1, u2, u3} {
+		if err := dm.UpdateUserTraffic(u.Username, 100, 200); err != nil {
+			t.Fatalf("update traffic %s: %v", u.Username, err)
+		}
+		if err := dm.DB.Create(&models.ConnectedClientInfoRecord{
+			VirtualIPAddr: "10.8.0." + u.Username[1:], ServerID: 1, Username: u.Username,
+			ByteReceived: 10, ByteSent: 20,
+		}).Error; err != nil {
+			t.Fatalf("create record %s: %v", u.Username, err)
+		}
+	}
+
+	if err := dm.BatchResetUserTraffic([]uint{u1.ID, u2.ID}); err != nil {
+		t.Fatalf("BatchResetUserTraffic: %v", err)
+	}
+
+	for _, name := range []string{"u1", "u2"} {
+		u := mustUser(t, dm, name)
+		if u.UploadTraffic != 0 || u.DownloadTraffic != 0 {
+			t.Fatalf("%s 历史流量未清零: %d/%d", name, u.UploadTraffic, u.DownloadTraffic)
+		}
+		var rec models.ConnectedClientInfoRecord
+		if err := dm.DB.Where("username = ?", name).First(&rec).Error; err != nil {
+			t.Fatalf("get record %s: %v", name, err)
+		}
+		if rec.ByteReceived != 0 || rec.ByteSent != 0 {
+			t.Fatalf("%s 会话流量未清零: %d/%d", name, rec.ByteReceived, rec.ByteSent)
+		}
+	}
+	u3b := mustUser(t, dm, "u3")
+	if u3b.UploadTraffic != 100 || u3b.DownloadTraffic != 200 {
+		t.Fatalf("u3 不应受影响: %d/%d", u3b.UploadTraffic, u3b.DownloadTraffic)
+	}
+	var rec3 models.ConnectedClientInfoRecord
+	if err := dm.DB.Where("username = ?", "u3").First(&rec3).Error; err != nil {
+		t.Fatalf("get u3 record: %v", err)
+	}
+	if rec3.ByteReceived != 10 || rec3.ByteSent != 20 {
+		t.Fatalf("u3 会话流量不应受影响: %d/%d", rec3.ByteReceived, rec3.ByteSent)
+	}
+}

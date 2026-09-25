@@ -191,6 +191,9 @@ export const userManageAPI = {
   
   // 清除用户流量
   resetTraffic: (id) => client.post('/user/reset_traffic', { id }),
+
+  // 批量清除用户流量
+  resetTrafficBatch: (idList) => client.post('/user/reset_traffic', { id_list: idList }),
 };
 
 export const permissionAPI = {

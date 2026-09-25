@@ -18,6 +18,10 @@ func TestIPInServerCIDR(t *testing.T) {
 		{"10.8.0.2", "", false},
 		{"not-an-ip", "10.8.0.0/24", false},
 		{"10.8.0.2", "bad-cidr", false},
+		{"fc00:2048:1024::2", "fc00:2048:1024::/64", true},
+		{"fc00:2048:1025::2", "fc00:2048:1024::/64", false},
+		{"fc00:2048:1024::2", "::/0", true},
+		{"10.8.0.2", "fc00:2048:1024::/64", false},
 	}
 	for _, c := range cases {
 		if got := ipInServerCIDR(c.ip, c.cidr); got != c.want {

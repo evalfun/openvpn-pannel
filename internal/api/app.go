@@ -283,7 +283,12 @@ func (a *App) updateConnectedClientInfoRecords() {
 		}
 		//log.Printf("更新客户端会话流量记录 服务器id %d 客户端数量 %d", serverID, len(clientStatusList))
 		for _, clientInfo := range clientStatusList {
-			for _, virtualIPAddr := range clientInfo.VirtualIPAddr {
+			// 记录以“主地址”（有 IPv4 用 IPv4，否则用 IPv6）为键，因此这里也按主地址更新流量。
+			virtualAddrs := clientInfo.VirtualIPAddr
+			if len(virtualAddrs) == 0 {
+				virtualAddrs = clientInfo.VirtualIP6Addr
+			}
+			for _, virtualIPAddr := range virtualAddrs {
 				//log.Println("更新客户端会话流量记录 ", virtualIPAddr)
 				err = a.daoManager.UpdateConnectedClientInfoRecordTraffic(serverID, virtualIPAddr, uint64(clientInfo.ByteReceived), uint64(clientInfo.ByteSent))
 				if err != nil {
@@ -317,6 +322,9 @@ func (a *App) reconcileRateLimits(serverInstance *ovpnserver.OpenVPNServerInstan
 		for _, virtualIPAddr := range info.VirtualIPAddr {
 			commonNameByVIP[virtualIPAddr] = info.CommonName
 		}
+		for _, virtualIPAddr := range info.VirtualIP6Addr {
+			commonNameByVIP[virtualIPAddr] = info.CommonName
+		}
 	}
 
 	changes := make([]rateLimitChange, 0)
@@ -339,7 +347,7 @@ func (a *App) reconcileRateLimits(serverInstance *ovpnserver.OpenVPNServerInstan
 			// 踢下线要访问管理 socket，与实例的其它操作互斥，取写锁。
 			pl := a.getProcessLock(serverID)
 			pl.Lock()
-			_, killErr := serverInstance.CloseClient(commonName, resourceMap)
+			_, killErr := serverInstance.CloseClient(commonName, record.RealIPAddr, resourceMap)
 			pl.Unlock()
 			if killErr != nil {
 				log.Printf("达量限速踢下线失败 server %d 用户 %s 证书 %s: %v", serverID, record.Username, commonName, killErr)

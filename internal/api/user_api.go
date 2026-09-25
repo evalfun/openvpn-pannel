@@ -306,7 +306,7 @@ func (a *App) UpdateUserInfoHandler(c *gin.Context, user *models.User) {
 				data = generated
 			}
 			if err := a.daoManager.SetUserMFA(targetUserID, models.MFA_TYPE_TOTP, data); err != nil {
-				c.JSON(500, gin.H{"result": "failed", "error": err.Error()})
+				c.JSON(500, gin.H{"result": "failed", "error": "SetUserMFA " + err.Error()})
 				return
 			}
 			resp["mfa_type"] = models.MFA_TYPE_TOTP
@@ -496,7 +496,8 @@ func (a *App) DeleteUserHandler(c *gin.Context, user *models.User) {
 
 func (a *App) ResetUserTrafficHandler(c *gin.Context, user *models.User) {
 	type Param struct {
-		UserID uint `json:"id" binding:"required"`
+		UserID     uint   `json:"id"`
+		UserIDList []uint `json:"id_list"`
 	}
 	var param Param
 	err := c.ShouldBindJSON(&param)
@@ -507,7 +508,19 @@ func (a *App) ResetUserTrafficHandler(c *gin.Context, user *models.User) {
 		})
 		return
 	}
-	err = a.daoManager.ResetUserTraffic(param.UserID)
+	// 兼容单个(id)与批量(id_list)两种调用
+	userIDList := param.UserIDList
+	if len(userIDList) == 0 && param.UserID != 0 {
+		userIDList = []uint{param.UserID}
+	}
+	if len(userIDList) == 0 {
+		c.JSON(400, gin.H{
+			"result": "failed",
+			"error":  "请至少指定一个用户",
+		})
+		return
+	}
+	err = a.daoManager.BatchResetUserTraffic(userIDList)
 	if err != nil {
 		c.JSON(500, gin.H{
 			"result": "failed",

@@ -1,19 +1,22 @@
 package models
 
 type Server struct {
-	ID          uint   `gorm:"primarykey" json:"id"`
-	Name        string `gorm:"unique;not null" json:"name"`
-	Local       string `gorm:"not null" json:"local"`
-	Port        uint32 `gorm:"not null" json:"port"`
-	Proto       string `gorm:"not null" json:"proto"`
-	Dev         string `gorm:"not null" json:"dev"`
-	CA          string `gorm:"not null" json:"ca"`
-	Cert        string `gorm:"not null" json:"cert"`
-	Key         string `gorm:"not null" json:"key"`
-	DH          string `gorm:"not null" json:"dh"`
-	DataCipher  string `gorm:"not null" json:"data_cipher"`
-	Topology    string `gorm:"not null" json:"topology"`
-	ServerCIDR  string `gorm:"not null" json:"server_cidr"`
+	ID         uint   `gorm:"primarykey" json:"id"`
+	Name       string `gorm:"unique;not null" json:"name"`
+	Local      string `gorm:"not null" json:"local"`
+	Port       uint32 `gorm:"not null" json:"port"`
+	Proto      string `gorm:"not null" json:"proto"`
+	Dev        string `gorm:"not null" json:"dev"`
+	CA         string `gorm:"not null" json:"ca"`
+	Cert       string `gorm:"not null" json:"cert"`
+	Key        string `gorm:"not null" json:"key"`
+	DH         string `gorm:"not null" json:"dh"`
+	DataCipher string `gorm:"not null" json:"data_cipher"`
+	Topology   string `gorm:"not null" json:"topology"`
+	ServerCIDR string `gorm:"not null" json:"server_cidr"`
+	// ServerCIDR6 为 OpenVPN IPv6 网段（对应配置里的 server-ipv6，如 fc00:2048:1024::/64）。
+	// 为空表示不启用 IPv6。
+	ServerCIDR6 string `gorm:"not null;default:''" json:"server_cidr6"`
 	DuplicateCN bool   `gorm:"not null" json:"duplicate_cn"`
 	Keepalive   string `gorm:"not null" json:"keepalive"`
 	TLSAuthKey  string `gorm:"not null" json:"tls_auth_key"`
@@ -100,15 +103,19 @@ type AddedServerACLRecord struct {
 	ID            uint   `gorm:"primarykey" json:"id"`
 	ServerID      uint   `gorm:"not null;index" json:"server_id"`
 	VirtualIPAddr string `gorm:"not null;index" json:"real_ip_addr"`
-	ACLType       uint   `gorm:"not null" json:"acl_type"`
-	ACLValue      string `gorm:"not null" json:"acl_value"`
+	// VirtualIP6Addr 客户端 IPv6 虚拟地址（启用 IPv6 时才有值）
+	VirtualIP6Addr string `gorm:"not null;default:''" json:"virtual_ip6_addr"`
+	ACLType        uint   `gorm:"not null" json:"acl_type"`
+	ACLValue       string `gorm:"not null" json:"acl_value"`
 }
 type ConnectedClientInfoRecord struct {
 	VirtualIPAddr string `gorm:"not null;index" json:"virtual_ip_addr"`
-	ServerID      uint   `gorm:"not null;index" json:"server_id"`
-	Username      string `gorm:"not null" json:"username"`
-	ByteReceived  uint64 `gorm:"not null;default:0" json:"byte_received"`
-	ByteSent      uint64 `gorm:"not null;default:0" json:"byte_sent"`
+	// 客户端的虚拟IPv6地址
+	VirtualIP6Addr string `gorm:"not null;default:'';index" json:"virtual_ip6_addr"`
+	ServerID       uint   `gorm:"not null;index" json:"server_id"`
+	Username       string `gorm:"not null" json:"username"`
+	ByteReceived   uint64 `gorm:"not null;default:0" json:"byte_received"`
+	ByteSent       uint64 `gorm:"not null;default:0" json:"byte_sent"`
 	// UploadLimitKB/DownloadLimitKB 记录该会话最近一次实际下发的限速(KB/s)，0=不限速。
 	// 达量限速运行时据此判断生效限速是否变化，只对变化的客户端重新设置 tc。
 	UploadLimitKB   uint64 `gorm:"not null;default:0" json:"upload_limit_kb"`

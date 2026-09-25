@@ -102,3 +102,57 @@ func TestProcessAlive(t *testing.T) {
 	}
 	cmd.Wait()
 }
+
+func TestParseManagementVersion(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{"5", 5},
+		{"6", 6},
+		{"6.0", 6},
+		{"v6", 6},
+		{" 6 ", 6},
+		{"", 0},
+		{"unknown", 0},
+	}
+	for _, c := range cases {
+		if got := parseManagementVersion(c.in); got != c.want {
+			t.Errorf("parseManagementVersion(%q) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
+func TestClientPortFromAddr(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"1.2.3.4:15757", "15757"},
+		{"[2001:db8::1]:15757", "15757"},
+		{"1.2.3.4", "1.2.3.4"},
+	}
+	for _, c := range cases {
+		if got := clientPortFromAddr(c.in); got != c.want {
+			t.Errorf("clientPortFromAddr(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestStripAddrProto(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"udp4:61.171.212.168:15778", "61.171.212.168:15778"},
+		{"udp6:[2001:db8::1]:15778", "[2001:db8::1]:15778"},
+		{"tcp4:1.2.3.4:5000", "1.2.3.4:5000"},
+		{"61.171.212.168:15778", "61.171.212.168:15778"},
+		{"[2001:db8::1]:15778", "[2001:db8::1]:15778"},
+	}
+	for _, c := range cases {
+		if got := stripAddrProto(c.in); got != c.want {
+			t.Errorf("stripAddrProto(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
