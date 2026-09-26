@@ -94,38 +94,51 @@ chmod +x /etc/init.d/openvpn-pannel
 
 浏览器访问 `http://<路由器IP>:8081/`（端口以 `config.json` 的 `listen` 为准）。
 
-### 3.4 更新资源文件（换成 OpenWrt 版本）
+### 3.4 选择资源集（OpenWrt 版脚本）
 
-进入面板的**资源文件**管理，把默认资源替换为**本目录下的 OpenWrt 版本**：
+进入面板的**资源管理**页，选择并启用适合你的**资源集**即可，**不再需要逐个替换文件**。
 
-| 资源 | 本目录文件 | 作用 |
-| --- | --- | --- |
-| 客户端上线脚本 | `client_online.sh` | 上线时放行 ACL（ipset）+ 设置下载限速 |
-| 客户端下线脚本 | `client_offline.sh` | 下线时回收 ACL 与限速 |
-| TOTP 放行脚本 | `acl_add.sh` | 二次认证通过后动态放行 ACL（仅启用 MFA 时用到） |
-| TOTP 回收脚本 | `acl_del.sh` | 登出时动态回收 ACL（仅启用 MFA 时用到） |
-| 达量限速更新脚本 | `ratelimit.sh` | 达量限速命中或解除时，对变化的客户端重设/移除 tc 限速 |
-| 服务端启动脚本 | `server_start.sh` | 初始化 ACL 链 / ipset |
-| 服务端退出脚本 | `server_exit.sh` | 回收 ACL 链 / ipset |
-| 杂项配置 | `misc` | 路径与文件名（`openvpn_path`、`shell_path` 等） |
+面板内置 4 套资源集，每套都包含全部资源文件（脚本、配置模板、帮助文档与客户端自助页面）：
 
-其余资源（`auth.sh`、OpenVPN `config` 模板、`client-config` 模板、`help`）保持默认即可。
+| 资源集 | 适用系统 | 防火墙 | 说明 |
+| --- | --- | --- | --- |
+| `linux-iptables`（默认） | 普通 Linux 发行版 | iptables/ipset | 下载限速用 ingress police |
+| `linux-nftables` | 普通 Linux 发行版 | 纯 nftables | 无需 ipset/iptables |
+| `openwrt-iptables` | OpenWrt / ImmortalWrt | iptables/ipset | 下载限速优先 ifb、回退 police |
+| `openwrt-nftables` | OpenWrt / ImmortalWrt | 纯 nftables | 下载限速优先 ifb、回退 police |
+
+在**资源管理**页顶部的「资源集」区域：选择要查看的资源集 → 点「启用该资源集」即可切换。
+切换后**请重启相关服务器进程**（或在面板重启对应服务器 / `/etc/init.d/openvpn-pannel reload`）使其生效。
+
+每套资源集是一个**可编辑的工作区**：首次使用时面板会把该套内置默认内容写入数据库，之后你在
+「资源管理」里对某个文件的修改只作用于当前查看的资源集，切走再切回仍保留；点「重置为内置默认值」
+可恢复该文件的出厂内容。
+
+本目录（`doc-openwrt/`）中各资源文件即 `openwrt-iptables` 资源集的来源，`nftables-scripts/openwrt/`
+为 `openwrt-nftables` 资源集的来源，`nftables-scripts/generic/` 为 `linux-nftables` 资源集的来源。
+各资源文件的作用一览：
+
+| 资源 | 作用 |
+| --- | --- |
+| 客户端上线脚本（`client_online.sh`） | 上线时放行 ACL + 设置下载限速 |
+| 客户端下线脚本（`client_offline.sh`） | 下线时回收 ACL 与限速 |
+| TOTP 放行脚本（`acl_add.sh`） | 二次认证通过后动态放行 ACL（仅启用 MFA 时用到） |
+| TOTP 回收脚本（`acl_del.sh`） | 登出时动态回收 ACL（仅启用 MFA 时用到） |
+| 达量限速更新脚本（`ratelimit.sh`） | 达量限速命中或解除时，对变化的客户端重设/移除 tc 限速 |
+| 服务端启动脚本（`server_start.sh`） | 初始化 ACL 链 / ipset |
+| 服务端退出脚本（`server_exit.sh`） | 回收 ACL 链 / ipset |
+| 杂项配置（`misc`） | 路径与文件名（`openvpn_path`、`shell_path` 等） |
+| 客户端自助页面（`client-page.html`） | 客户端自助服务页面的 HTML，可自行修改界面 |
 
 > - **`ratelimit.sh` 是达量限速的运行时脚本**：面板每隔一段时间检查在线客户端的生效限速，只有当某个客户端的限速发生变化时，才把变化的客户端通过标准输入交给该脚本重设 tc。首次上线时的限速仍由 `client_online.sh` 设置。
 > - **`openvpn-pannel` 不是资源文件**，它是系统启动脚本，放到 `/etc/init.d/`（见 3.2）。
 > - 资源文件中形如 `__INTERNAL_API__`、`__WORKING_DIR__`、`__SERVER_ID__`、`__SERVER_INTERFACE__` 的占位符，由面板在保存/下发时自动填充，**请勿手动修改**。
 > - OpenWrt 版资源与通用版的主要差别：直接调用 `/usr/sbin/iptables`（或 `/sbin/tc`）等绝对路径、不依赖 `sudo`、用 `/sys/class/net/<iface>` 判断接口是否存在、`openvpn_path=/usr/sbin/openvpn`、`shell_path=/bin/bash`，且 tc 限速与 ACL 操作放入 `flock` 临界区串行化。
+> - 资源编辑/切换默认受 `config.json` 的 `allow_edit_resource` 控制，需设为 `true` 才可修改。
 
-> **可选的 nftables 版本（自行替换）**：本仓库 `nftables-scripts/openwrt/` 目录提供了把上述
-> 防火墙脚本从 `iptables` / `ipset` 换成纯 `nftables` 的版本，**面板不会自动使用，需你手动替换**。
-> 在面板「资源文件」中把 `client_online.sh`、`client_offline.sh`、`server_start.sh`、
-> `server_exit.sh` 四个文件替换为该目录下的同名文件；若启用 TOTP（MFA），再把
-> `acl_add.sh`、`acl_del.sh` 也替换为该目录下的同名文件，然后重启服务即可，
-> `misc`、`ratelimit.sh` 等其余资源保持原样。普通 Linux 请使用 `nftables-scripts/generic/`。  
-> 要替换就全部替换，不能只替换部分脚本，不然会产生预期之外的问题  
-> 使用 nftables 版本时，请把 3.5 中 `openvpn` 区域的**转发（Forward）策略设为允许**：
-> 面板会在 fw4 之前（`priority -200`）用自身规则直接 `drop` 未放行的流量，从而实施真正的
-> 访问控制；若仍设为拒绝，fw4 会把面板已放行的流量一并拒绝。
+> **nftables 版本**：启用 `openwrt-nftables`（或普通 Linux 用 `linux-nftables`）后，请把 3.5 中
+> `openvpn` 区域的**转发（Forward）策略设为允许**：面板会在 fw4 之前（`priority -200`）用自身规则
+> 直接 `drop` 未放行的流量，从而实施真正的访问控制；若仍设为拒绝，fw4 会把面板已放行的流量一并拒绝。
 
 ### 3.4.1 关于服务器 IPv6（是否开启）
 
@@ -295,26 +308,25 @@ ip link del ifb9
 | 文件 | 放置位置 | 说明 |
 | --- | --- | --- |
 | `openvpn-pannel` | `/etc/init.d/openvpn-pannel` | procd 启动脚本 |
-| `client_online.sh` | 面板 → 资源文件 | 上线：ACL 放行 + 限速（`flock` 串行化） |
-| `client_offline.sh` | 面板 → 资源文件 | 下线：回收 ACL + 限速（`flock` 串行化） |
-| `acl_add.sh` | 面板 → 资源文件 | TOTP 二次认证通过后动态放行 ACL（仅启用 MFA 时用到） |
-| `acl_del.sh` | 面板 → 资源文件 | TOTP 登出后动态回收 ACL（仅启用 MFA 时用到） |
-| `ratelimit.sh` | 面板 → 资源文件 | 达量限速变化时重设 / 移除 tc 限速（`flock` 串行化） |
-| `server_start.sh` | 面板 → 资源文件 | 服务端启动：初始化 ACL 链 / ipset |
-| `server_exit.sh` | 面板 → 资源文件 | 服务端退出：回收 ACL 链 / ipset |
-| `misc` | 面板 → 资源文件 | 路径 / 文件名配置 |
+| `client_online.sh` | 资源集 `openwrt-iptables` | 上线：ACL 放行 + 限速（`flock` 串行化） |
+| `client_offline.sh` | 资源集 `openwrt-iptables` | 下线：回收 ACL + 限速（`flock` 串行化） |
+| `acl_add.sh` | 资源集 `openwrt-iptables` | TOTP 二次认证通过后动态放行 ACL（仅启用 MFA 时用到） |
+| `acl_del.sh` | 资源集 `openwrt-iptables` | TOTP 登出后动态回收 ACL（仅启用 MFA 时用到） |
+| `ratelimit.sh` | 资源集 `openwrt-iptables` | 达量限速变化时重设 / 移除 tc 限速（`flock` 串行化） |
+| `server_start.sh` | 资源集 `openwrt-iptables` | 服务端启动：初始化 ACL 链 / ipset |
+| `server_exit.sh` | 资源集 `openwrt-iptables` | 服务端退出：回收 ACL 链 / ipset |
+| `misc` | 资源集 `openwrt-iptables` | 路径 / 文件名配置 |
 
-> 可选：需要纯 `nftables` 时，用仓库 `nftables-scripts/openwrt/` 下的
-> `client_online.sh`、`client_offline.sh`、`server_start.sh`、`server_exit.sh`
-> （以及启用 MFA 时的 `acl_add.sh`、`acl_del.sh`）手动替换上表中对应的资源文件（详见 3.4）。
+> 以上文件是内置资源集 `openwrt-iptables` 的来源，面板已内置，无需手动放置。
+> 需要纯 `nftables` 时，在「资源管理」页启用 `openwrt-nftables` 资源集即可（详见 3.4）。
 
 ---
 
 ## 6. 常见问题
 
-- **限速不生效**：确认已安装 `tc`，且内核包含 `sch_htb`、`cls_u32`、`sch_ingress`。**下载（入方向）限速**优先依赖 `ifb` + `act_mirred`（安装 `kmod-ifb`、`kmod-sched-act-mirred`），不可用时回退 `act_police`；两者都缺失时脚本会记录 WARNING 并跳过下载限速（上传限速不受影响）。**自编译固件通常既无 `act_police`、也可能未编入 `ifb`/`act_mirred`，请按 3.4.2 实测确认你的固件到底能用哪种方案**。并在面板「资源文件」中把 `ratelimit.sh` 替换为本目录的 OpenWrt 版本。缺失时脚本会记录日志并跳过限速，不影响连接；达量限速在运行中变化时依赖 `ratelimit.sh` 重设 tc。
-- **ACL 未生效**：默认脚本确认已安装 `ipset`。缺失时脚本会回落到逐条 `iptables` 模式（功能仍可用）。若使用 `nftables-scripts/openwrt/` 的版本，则无需 `ipset` / `iptables`，但需安装 `nftables`，并确认服务端启动脚本成功建立了 `openvpn_acl_<服务器ID>` 表。
-- **启用 MFA 后客户端一直无法上网**：确认已在客户端自助页面完成动态验证码验证；若使用 nftables 版本，请把 `acl_add.sh`、`acl_del.sh` 也一并替换为 `nftables-scripts/openwrt/` 下的同名文件。
+- **限速不生效**：确认已安装 `tc`，且内核包含 `sch_htb`、`cls_u32`、`sch_ingress`。**下载（入方向）限速**优先依赖 `ifb` + `act_mirred`（安装 `kmod-ifb`、`kmod-sched-act-mirred`），不可用时回退 `act_police`；两者都缺失时脚本会记录 WARNING 并跳过下载限速（上传限速不受影响）。**自编译固件通常既无 `act_police`、也可能未编入 `ifb`/`act_mirred`，请按 3.4.2 实测确认你的固件到底能用哪种方案**。同时请在「资源管理」页确认已启用 OpenWrt 版资源集（`openwrt-iptables` 或 `openwrt-nftables`）。缺失时脚本会记录日志并跳过限速，不影响连接；达量限速在运行中变化时依赖 `ratelimit.sh` 重设 tc。
+- **ACL 未生效**：iptables 资源集确认已安装 `ipset`。缺失时脚本会回落到逐条 `iptables` 模式（功能仍可用）。若启用 nftables 资源集，则无需 `ipset` / `iptables`，但需安装 `nftables`，并确认服务端启动脚本成功建立了 `openvpn_acl_<服务器ID>` 表。
+- **启用 MFA 后客户端一直无法上网**：确认已在客户端自助页面完成动态验证码验证；nftables 资源集的 `acl_add.sh`、`acl_del.sh` 已一并启用，无需单独替换。
 - **应用接口后地址消失**：属正常现象，见 3.6，重启服务器进程即可恢复。
 - **修改了资源脚本**：需在面板重新保存并重启服务，使新脚本生效。
 - **改了 `config.json`**：同样需要重启服务才生效。

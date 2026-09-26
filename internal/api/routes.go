@@ -153,6 +153,10 @@ func (a *App) setupRoutes() {
 		api.POST("/resource/write", a.AdminLoginWarper(a.WriteResourceHandler))
 		api.POST("/resource/delete", a.AdminLoginWarper(a.DeleteResourceHandler))
 		api.GET("/resource/list", a.AdminLoginWarper(a.ListResourceHandler))
+		api.POST("/resource/set/active", a.AdminLoginWarper(a.SetActiveResourceSetHandler))
+
+		// 仪表盘概览接口
+		api.GET("/dashboard/summary", a.AdminLoginWarper(a.GetDashboardSummaryHandler))
 
 		// 权限接口
 

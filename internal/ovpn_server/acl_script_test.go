@@ -8,7 +8,7 @@ import (
 // 确保内置的 ACL 动态放行/回收脚本存在且包含关键占位符与逻辑。
 func TestDefaultACLScripts(t *testing.T) {
 	for _, id := range []string{RESOURCE_ID_ACL_ADD_SCRIPT, RESOURCE_ID_ACL_DEL_SCRIPT} {
-		content := GetDefaultResource(id)
+		content := GetSetDefaultResource(RESOURCE_SET_LINUX_IPTABLES, id)
 		if content == "" {
 			t.Fatalf("默认资源 %s 为空", id)
 		}
@@ -19,7 +19,7 @@ func TestDefaultACLScripts(t *testing.T) {
 		}
 	}
 	// 回收脚本必须清空该客户端的连接跟踪(状态表)，否则已建立的连接在登出后仍会放行。
-	del := GetDefaultResource(RESOURCE_ID_ACL_DEL_SCRIPT)
+	del := GetSetDefaultResource(RESOURCE_SET_LINUX_IPTABLES, RESOURCE_ID_ACL_DEL_SCRIPT)
 	for _, want := range []string{"flush_conntrack", "conntrack"} {
 		if !strings.Contains(del, want) {
 			t.Errorf("acl_del.sh 缺少 %q", want)
@@ -39,7 +39,7 @@ func TestDefaultScriptsIPv6Support(t *testing.T) {
 		RESOURCE_ID_SERVER_EXIT_SCRIPT:    {"ip6tables", "ov${SERVER_ID}_6c_"},
 	}
 	for id, wants := range cases {
-		content := GetDefaultResource(id)
+		content := GetSetDefaultResource(RESOURCE_SET_LINUX_IPTABLES, id)
 		if content == "" {
 			t.Fatalf("默认资源 %s 为空", id)
 		}
@@ -56,7 +56,7 @@ func TestDefaultScriptsIPv6Support(t *testing.T) {
 func TestDefaultScriptsDownloadLimitFallback(t *testing.T) {
 	// 上线与达量限速脚本负责设置下载限速，使用 ingress police。
 	for _, id := range []string{RESOURCE_ID_CLIENT_ONLINE_SCRIPT, RESOURCE_ID_RATE_LIMIT_SCRIPT} {
-		content := GetDefaultResource(id)
+		content := GetSetDefaultResource(RESOURCE_SET_LINUX_IPTABLES, id)
 		for _, want := range []string{"police rate", "parent ffff"} {
 			if !strings.Contains(content, want) {
 				t.Errorf("资源 %s 缺少下载限速(police)相关内容 %q", id, want)
@@ -64,7 +64,7 @@ func TestDefaultScriptsDownloadLimitFallback(t *testing.T) {
 		}
 	}
 	// 下线脚本负责清理主接口 ingress 上的 police 规则。
-	offline := GetDefaultResource(RESOURCE_ID_CLIENT_OFFLINE_SCRIPT)
+	offline := GetSetDefaultResource(RESOURCE_SET_LINUX_IPTABLES, RESOURCE_ID_CLIENT_OFFLINE_SCRIPT)
 	for _, want := range []string{"parent ffff", "ingress"} {
 		if !strings.Contains(offline, want) {
 			t.Errorf("client_offline.sh 缺少下载限速清理相关内容 %q", want)

@@ -1,0 +1,25 @@
+client
+dev tun
+proto {{.Server.Proto}}
+remote {{.RemoteHost}} {{.RemotePort}}
+resolv-retry infinite
+nobind
+persist-key
+persist-tun
+auth-user-pass
+data-ciphers {{.Server.DataCipher}}
+verb 3
+<ca>
+{{.CA}}
+</ca>
+<cert>
+{{.Cert}}
+</cert>
+{{if .Key}}<key>
+{{.Key}}
+</key>
+{{end}}{{if .TLSAuthKey}}key-direction 1
+<tls-auth>
+{{.TLSAuthKey}}
+</tls-auth>
+{{end}}

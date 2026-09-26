@@ -14,19 +14,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func (a *App) PrepareResourceMap(ResourceIDList []string) map[string]string {
-	var resourceMap map[string]string
-	resourceMap = make(map[string]string)
-	resourceModelList, err := a.daoManager.GetResourceByIDList(ResourceIDList)
-	if err != nil {
-		return resourceMap
-	}
-	for _, resourceModel := range resourceModelList {
-		resourceMap[resourceModel.ID] = resourceModel.Content
-	}
-	return resourceMap
-}
-
 // 创建openvpn服务器接口
 func (a *App) CreateOpenVPNServerHandler(c *gin.Context, user *models.User) {
 	type Param struct {
@@ -693,7 +680,7 @@ func (a *App) StartOpenVPNServerInstanceHandler(c *gin.Context, user *models.Use
 		if ok {
 			miscConfigStr = miscConfig
 		} else {
-			miscConfigStr = ovpnserver.GetDefaultResource(ovpnserver.RESOURCE_ID_MISC_CONFIG)
+			miscConfigStr = a.GetActiveResourceContent(ovpnserver.RESOURCE_ID_MISC_CONFIG)
 		}
 		var miscConfigModel ovpnserver.MiscConfig
 		err = json.Unmarshal([]byte(miscConfigStr), &miscConfigModel)
@@ -1328,7 +1315,7 @@ func (a *App) startServerLocked(serverModel *models.Server, source string) {
 	if ok {
 		miscConfigStr = miscConfig
 	} else {
-		miscConfigStr = ovpnserver.GetDefaultResource(ovpnserver.RESOURCE_ID_MISC_CONFIG)
+		miscConfigStr = a.GetActiveResourceContent(ovpnserver.RESOURCE_ID_MISC_CONFIG)
 	}
 	var miscConfigModel ovpnserver.MiscConfig
 	err = json.Unmarshal([]byte(miscConfigStr), &miscConfigModel)

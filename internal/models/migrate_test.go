@@ -130,3 +130,35 @@ func TestMigrateTOTPToMFA(t *testing.T) {
 		t.Fatalf("plain = type:%d data:%q, want type:0 data:''", plain.MFAType, plain.MFAData)
 	}
 }
+
+// 升级场景：老的 app_resource_records 只有单主键 id，迁移后应新增 set_id 列，
+// 并把历史记录归入默认资源集（linux-iptables），且原有内容保留。
+func TestMigrateResourceSetFromLegacy(t *testing.T) {
+	cfg := &config.Config{SQLiteDB: filepath.Join(t.TempDir(), "old-res.db")}
+	db, err := ConnectDB(cfg)
+	if err != nil {
+		t.Fatalf("ConnectDB: %v", err)
+	}
+	oldSchema := `CREATE TABLE app_resource_records (
+		id varchar(50) PRIMARY KEY,
+		content text NOT NULL
+	)`
+	if err := db.Exec(oldSchema).Error; err != nil {
+		t.Fatalf("create old app_resource_records: %v", err)
+	}
+	if err := db.Exec(`INSERT INTO app_resource_records (id, content) VALUES ('client_online.sh', 'MY-CUSTOM')`).Error; err != nil {
+		t.Fatalf("insert old resource: %v", err)
+	}
+
+	if err := MigrateDB(db); err != nil {
+		t.Fatalf("MigrateDB: %v", err)
+	}
+
+	var rec AppResourceRecord
+	if err := db.Where("set_id = ? AND id = ?", "linux-iptables", "client_online.sh").First(&rec).Error; err != nil {
+		t.Fatalf("迁移后未在默认资源集找到旧记录: %v", err)
+	}
+	if rec.Content != "MY-CUSTOM" {
+		t.Fatalf("迁移后内容 = %q, 期望保留 MY-CUSTOM", rec.Content)
+	}
+}

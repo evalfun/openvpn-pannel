@@ -122,7 +122,8 @@ func (ins *OpenVPNServerInstance) WriteConfig(resourceMap map[string]string) err
 	}
 	configTemplate, ok := resourceMap[RESOURCE_ID_CONFIG_TEMPLATE]
 	if !ok {
-		configTemplate = GetDefaultResource(RESOURCE_ID_CONFIG_TEMPLATE)
+		// 兜底：正常情况下调用方已通过 PrepareResourceMap 按当前资源集填好，缺失时才回落默认资源集。
+		configTemplate = GetSetDefaultResource(RESOURCE_SET_LINUX_IPTABLES, RESOURCE_ID_CONFIG_TEMPLATE)
 	}
 	configString, err := RenderOpenvpnServerConfig(configTemplate, configParam)
 	if err != nil {
@@ -173,7 +174,7 @@ func (ins *OpenVPNServerInstance) WriteConfig(resourceMap map[string]string) err
 	for resourceID, fileName := range fileNameMap {
 		fileContent, ok := resourceMap[resourceID]
 		if !ok {
-			fileContent = GetDefaultResource(resourceID)
+			fileContent = GetSetDefaultResource(RESOURCE_SET_LINUX_IPTABLES, resourceID)
 		}
 		fileContent = strings.ReplaceAll(fileContent, "__INTERNAL_API__", ins.internalAPIListen)
 		fileContent = strings.ReplaceAll(fileContent, "__WORKING_DIR__", ins.workingDir)
@@ -222,7 +223,7 @@ func (ins *OpenVPNServerInstance) Start(resourceMap map[string]string) error {
 	// 执行启动脚本
 	server_start_script, ok := resourceMap[RESOURCE_ID_SERVER_START_SCRIPT]
 	if !ok {
-		server_start_script = GetDefaultResource(RESOURCE_ID_SERVER_START_SCRIPT)
+		server_start_script = GetSetDefaultResource(RESOURCE_SET_LINUX_IPTABLES, RESOURCE_ID_SERVER_START_SCRIPT)
 	}
 	server_start_script = strings.ReplaceAll(server_start_script, "__INTERNAL_API__", ins.internalAPIListen)
 	server_start_script = strings.ReplaceAll(server_start_script, "__WORKING_DIR__", ins.workingDir)
@@ -285,7 +286,7 @@ func (ins *OpenVPNServerInstance) Stop(resourceMap map[string]string) error {
 	// 执行退出脚本
 	server_exit_script, ok := resourceMap[RESOURCE_ID_SERVER_EXIT_SCRIPT]
 	if !ok {
-		server_exit_script = GetDefaultResource(RESOURCE_ID_SERVER_EXIT_SCRIPT)
+		server_exit_script = GetSetDefaultResource(RESOURCE_SET_LINUX_IPTABLES, RESOURCE_ID_SERVER_EXIT_SCRIPT)
 	}
 	server_exit_script = strings.ReplaceAll(server_exit_script, "__INTERNAL_API__", ins.internalAPIListen)
 	server_exit_script = strings.ReplaceAll(server_exit_script, "__WORKING_DIR__", ins.workingDir)
@@ -607,7 +608,7 @@ func (ins *OpenVPNServerInstance) ClearLog(logType int, resourceMap map[string]s
 func getMiscConfig(resourceMap map[string]string) (*MiscConfig, error) {
 	miscConfig, ok := resourceMap[RESOURCE_ID_MISC_CONFIG]
 	if !ok {
-		miscConfig = GetDefaultResource(RESOURCE_ID_MISC_CONFIG)
+		miscConfig = GetSetDefaultResource(RESOURCE_SET_LINUX_IPTABLES, RESOURCE_ID_MISC_CONFIG)
 	}
 	var miscConfigModel MiscConfig
 	err := json.Unmarshal([]byte(miscConfig), &miscConfigModel)

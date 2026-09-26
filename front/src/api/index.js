@@ -11,6 +11,11 @@ export const userAPI = {
   logout: () => client.post('/user/logout'),
 };
 
+export const dashboardAPI = {
+  // 获取首页概览
+  getSummary: () => client.get('/dashboard/summary'),
+};
+
 export const serverAPI = {
   // 获取服务器列表
   getServerList: () => client.get('/server/list'),

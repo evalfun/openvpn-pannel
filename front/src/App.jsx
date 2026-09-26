@@ -2,6 +2,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import { ThemeProvider, createTheme, CssBaseline } from '@mui/material';
 import Login from './pages/Login';
 import Layout from './pages/Layout';
+import Dashboard from './pages/Dashboard';
 import ServerManagement from './pages/ServerManagement';
 import Users from './pages/Users';
 import Groups from './pages/Groups';
@@ -38,6 +39,8 @@ function App() {
               </ProtectedRoute>
             }
           >
+            <Route path="dashboard" element={<Dashboard />} />
+            <Route path="home" element={<Dashboard />} />
             <Route path="servers" element={<ServerManagement />} />
             <Route path="ratelimit" element={<RateLimit />} />
             <Route path="certificates" element={<Certificates />} />
@@ -48,7 +51,7 @@ function App() {
             <Route path="resources" element={<Resources />} />
             <Route path="logs" element={<Logs />} />
             <Route path="/dashboard/help" element={<Help />} />
-            <Route index element={<Navigate to="servers" replace />} />
+            <Route index element={<Navigate to="dashboard" replace />} />
           </Route>
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
         </Routes>

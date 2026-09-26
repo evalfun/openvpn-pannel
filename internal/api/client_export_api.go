@@ -126,7 +126,7 @@ func (a *App) ExportClientConfigHandler(c *gin.Context, user *models.User) {
 	})
 	template := resourceMap[ovpnserver.RESOURCE_ID_CLIENT_CONFIG]
 	if strings.TrimSpace(template) == "" {
-		template = ovpnserver.GetDefaultResource(ovpnserver.RESOURCE_ID_CLIENT_CONFIG)
+		template = a.GetActiveResourceContent(ovpnserver.RESOURCE_ID_CLIENT_CONFIG)
 	}
 
 	renderParam := &ovpnserver.OpenvpnClientTemplateParam{

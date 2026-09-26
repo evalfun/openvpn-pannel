@@ -3,8 +3,9 @@ CMD          := ./cmd/openvpn-pannel
 FRONT_DIR    := front
 DIST_DIR     := $(FRONT_DIR)/dist
 ASSETS_GO    := internal/assets/assets.go
-OVPN_ASSETS  := internal/ovpn_server/assets.go
-OVPN_RES     := internal/ovpn_server/default_resource
+OVPN_ASSETS  := internal/ovpn_server/resource_sets_assets.go
+OVPN_RES     := internal/ovpn_server/resource_sets
+OVPN_RES_FILES := $(shell find $(OVPN_RES) -type f 2>/dev/null)
 
 BUILD_DATE   := $(shell date "+%Y-%m-%d %H:%M:%S")
 LDFLAGS      := -X 'main.buildDate=$(BUILD_DATE)'
@@ -36,8 +37,11 @@ assets: $(ASSETS_GO) $(OVPN_ASSETS)
 $(ASSETS_GO): $(DIST_DIR)
 	go-bindata -o $(ASSETS_GO) -pkg assets -prefix "$(DIST_DIR)" $(DIST_DIR)/...
 
-$(OVPN_ASSETS): $(OVPN_RES)
+$(OVPN_ASSETS): $(OVPN_RES_FILES)
 	go-bindata -o $(OVPN_ASSETS) -pkg ovpnserver -prefix "$(OVPN_RES)" $(OVPN_RES)/...
+	# go-bindata 生成的符号名固定为 Asset/AssetNames/...，这里统一加上 ResourceSet 前缀，
+	# 以便同一包内可再嵌入其它资源而不冲突（见脚本 scripts/rename_resource_set_assets.sh）。
+	bash scripts/rename_resource_set_assets.sh $(OVPN_ASSETS)
 
 ## run: 编译并运行
 run: build

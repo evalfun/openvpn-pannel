@@ -390,7 +390,7 @@ func (a *App) runRateLimitUpdateScript(serverInstance *ovpnserver.OpenVPNServerI
 	resourceMap := a.PrepareResourceMap([]string{ovpnserver.RESOURCE_ID_MISC_CONFIG, ovpnserver.RESOURCE_ID_RATE_LIMIT_SCRIPT})
 	script, ok := resourceMap[ovpnserver.RESOURCE_ID_RATE_LIMIT_SCRIPT]
 	if !ok {
-		script = ovpnserver.GetDefaultResource(ovpnserver.RESOURCE_ID_RATE_LIMIT_SCRIPT)
+		script = a.GetActiveResourceContent(ovpnserver.RESOURCE_ID_RATE_LIMIT_SCRIPT)
 	}
 	miscConfig, err := ovpnserver.ParseMiscConfig(resourceMap)
 	if err != nil {

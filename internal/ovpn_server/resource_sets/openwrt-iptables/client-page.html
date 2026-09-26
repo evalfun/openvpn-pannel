@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>VPN 连接信息</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif; background: #f5f6f8; color: #1f2937; }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 20px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,.08); padding: 20px; margin-bottom: 16px; }
+  h1 { font-size: 20px; margin: 0 0 16px; }
+  h2 { font-size: 15px; margin: 0 0 12px; color: #374151; }
+  .row { display: flex; justify-content: space-between; gap: 12px; padding: 9px 0; border-bottom: 1px solid #f0f1f3; }
+  .row:last-child { border-bottom: none; }
+  .k { color: #6b7280; flex: 0 0 auto; }
+  .v { text-align: right; word-break: break-all; font-weight: 500; }
+  .nets { margin: 0; padding-left: 18px; }
+  .nets li { padding: 3px 0; }
+  .muted { color: #9ca3af; font-size: 13px; }
+  .err { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; border-radius: 8px; padding: 12px; margin-bottom: 16px; }
+  .ok { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; border-radius: 8px; padding: 12px; margin-bottom: 16px; }
+  input[type=text] { width: 100%; font-size: 22px; letter-spacing: 6px; text-align: center; padding: 12px; border: 1px solid #d1d5db; border-radius: 8px; }
+  button { width: 100%; margin-top: 12px; padding: 12px; font-size: 16px; border: none; border-radius: 8px; background: #2563eb; color: #fff; cursor: pointer; }
+  button.secondary { background: #ef4444; }
+  button:disabled { opacity: .6; cursor: not-allowed; }
+  code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+  .center { text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="app" class="card"><div class="center muted">加载中…</div></div>
+  <div class="card">
+    <h2>无头设备（curl）</h2>
+    <div class="muted">
+      登录：<code id="curlLogin">curl http://本页地址/login/123456</code><br/>
+      登出：<code id="curlLogout">curl http://本页地址/logout</code>
+    </div>
+  </div>
+</div>
+<script>
+(function () {
+  var app = document.getElementById('app');
+  var base = location.protocol + '//' + location.host;
+  document.getElementById('curlLogin').textContent = 'curl ' + base + '/login/123456';
+  document.getElementById('curlLogout').textContent = 'curl ' + base + '/logout';
+
+  function fmtBytes(n) {
+    n = Number(n) || 0;
+    var u = ['B','KB','MB','GB','TB'], i = 0;
+    while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+    return (i === 0 ? n : n.toFixed(2)) + ' ' + u[i];
+  }
+  function fmtLimit(kb) { return (Number(kb) > 0) ? (Number(kb) + ' KB/s') : '不限速'; }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]; }); }
+
+  function showError(msg) { app.innerHTML = '<div class="err">' + esc(msg) + '</div>'; }
+  function showNotice(msg) { app.innerHTML = '<div class="ok">' + esc(msg) + '</div>'; }
+
+  function renderInfo(d) {
+    if (d.mfa_required && !d.logged_in) {
+      app.innerHTML =
+        '<h1>需要动态验证码</h1>' +
+        '<p class="muted">该账号已启用 TOTP（MFA）。请输入认证器 App 中 30 秒刷新一次的 6 位验证码以完成登录并放行网络。</p>' +
+        '<input id="code" type="text" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="one-time-code" />' +
+        '<button id="loginBtn">验证并登录</button>' +
+        '<div id="msg"></div>';
+      var input = document.getElementById('code');
+      var btn = document.getElementById('loginBtn');
+      input.focus();
+      function doLogin() {
+        var code = (input.value || '').trim();
+        if (!/^[0-9]{6}$/.test(code)) { document.getElementById('msg').innerHTML = '<div class="err">请输入 6 位数字验证码</div>'; return; }
+        btn.disabled = true;
+        fetch('api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: code }) })
+          .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+          .then(function (res) {
+            btn.disabled = false;
+            if (!res.ok) { document.getElementById('msg').innerHTML = '<div class="err">' + esc(res.j.error || '验证失败') + '</div>'; return; }
+            // MFA 验证成功：自动刷新并转到用户信息界面
+            document.getElementById('msg').innerHTML = '<div class="ok">验证成功，正在加载账户信息…</div>';
+            load();
+          })
+          .catch(function () { btn.disabled = false; document.getElementById('msg').innerHTML = '<div class="err">网络错误</div>'; });
+      }
+      btn.onclick = doLogin;
+      input.onkeydown = function (e) { if (e.key === 'Enter') doLogin(); };
+      return;
+    }
+
+    var nets = (d.networks || []);
+    var netsHtml = nets.length
+      ? '<ul class="nets">' + nets.map(function (n) { return '<li>' + esc(n) + '</li>'; }).join('') + '</ul>'
+      : '<span class="muted">无（未配置可访问网络）</span>';
+    var ipv6Row = d.virtual_ip6
+      ? '<div class="row"><span class="k">内网 IPv6</span><span class="v">' + esc(d.virtual_ip6) + '</span></div>'
+      : '';
+
+    app.innerHTML =
+      '<h1>VPN 连接信息</h1>' +
+      '<div class="row"><span class="k">服务器名称</span><span class="v">' + esc(d.server_name) + '</span></div>' +
+      '<div class="row"><span class="k">用户名称</span><span class="v">' + esc(d.username) + '</span></div>' +
+      '<div class="row"><span class="k">证书名称</span><span class="v">' + esc(d.cert_name || '-') + '</span></div>' +
+      '<div class="row"><span class="k">公网 IP</span><span class="v">' + esc(d.public_ip || '-') + '</span></div>' +
+      '<div class="row"><span class="k">内网 IP</span><span class="v">' + esc(d.virtual_ip) + '</span></div>' +
+      ipv6Row +
+      '<div class="row"><span class="k">客户端下载流量</span><span class="v">' + fmtBytes(d.upload_bytes) + '</span></div>' +
+      '<div class="row"><span class="k">客户端上传流量</span><span class="v">' + fmtBytes(d.download_bytes) + '</span></div>' +
+      '<div class="row"><span class="k">客户端下载限速</span><span class="v">' + fmtLimit(d.upload_limit_kb) + '</span></div>' +
+      '<div class="row"><span class="k">客户端上传限速</span><span class="v">' + fmtLimit(d.download_limit_kb) + '</span></div>' +
+      '<h2 style="margin-top:18px">可访问的网络</h2>' + netsHtml +
+      (d.mfa_required ? '<button id="logoutBtn" class="secondary">登出（回收网络权限）</button>' : '');
+
+    if (d.mfa_required) {
+      document.getElementById('logoutBtn').onclick = function () {
+        if (!confirm('确定登出吗？登出后将回收已放行的网络权限。')) return;
+        fetch('api/logout', { method: 'POST' }).then(function () { load(); });
+      };
+    }
+  }
+
+  function load() {
+    fetch('api/info').then(function (r) {
+      return r.json().then(function (j) { return { ok: r.ok, j: j }; });
+    }).then(function (res) {
+      if (!res.ok) { showError(res.j.error || '无法访问'); return; }
+      renderInfo(res.j);
+    }).catch(function () { showError('网络错误'); });
+  }
+  load();
+})();
+</script>
+</body>
+</html>

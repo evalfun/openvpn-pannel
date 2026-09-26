@@ -1,0 +1,38 @@
+{{if .ServerConfig.Local}}local {{.ServerConfig.Local}} {{else}};local 0.0.0.0{{end}}
+port {{.ServerConfig.Port}}
+proto {{.ServerConfig.Proto}}
+dev {{.ServerConfig.Dev}}
+ca {{.WorkingDir}}{{.MiscConfig.CAFileName}}
+cert {{.WorkingDir}}{{.MiscConfig.ServerCertFileName}}
+key {{.WorkingDir}}{{.MiscConfig.ServerKeyFileName}}  # This file should be kept secret
+dh {{.WorkingDir}}{{.MiscConfig.DHFileName}}
+data-ciphers {{.ServerConfig.DataCipher}}
+server {{.ServerConfig.ServerCIDR}}
+{{if .ServerConfig.ServerCIDR6}}server-ipv6 {{.ServerConfig.ServerCIDR6}}
+{{end}}topology {{.ServerConfig.Topology}}
+management {{.WorkingDir}}{{.MiscConfig.ManagementSocket}} unix
+
+{{if .ServerConfig.DuplicateCN}}duplicate-cn {{else}};duplicate-cn {{end}}
+
+keepalive {{.ServerConfig.Keepalive}}
+tls-auth {{.WorkingDir}}{{.MiscConfig.TAFileName}} 0 # This file is secret
+
+{{range .ServerRoute}}push "route {{.Network}}" {{"\n"}}{{end}}
+
+script-security 3
+auth-user-pass-verify {{.WorkingDir}}{{.MiscConfig.ClientAuthScriptName}} via-env
+;user openvpn
+;group openvpn
+persist-key
+persist-tun
+status {{.WorkingDir}}{{.MiscConfig.StatusFileName}} 20
+log-append  {{.WorkingDir}}{{.MiscConfig.ServerLog}}
+verb 3
+explicit-exit-notify 1
+
+client-config-dir {{.WorkingDir}}{{.MiscConfig.CCDDir}}
+ifconfig-pool-persist {{.WorkingDir}}{{.MiscConfig.IPPFileName}}
+client-disconnect {{.WorkingDir}}{{.MiscConfig.ClientOfflineScriptName}}
+client-connect {{.WorkingDir}}{{.MiscConfig.ClientOnlineScriptName}}
+
+{{.ServerConfig.OtherConfig}}

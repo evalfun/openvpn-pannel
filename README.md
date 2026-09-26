@@ -60,9 +60,7 @@
 - 证书由 Go 标准库生成，**无需 openssl**。
 
 > 面板默认使用 `iptables` / `ipset` 脚本。若系统已不再提供 `iptables`（如较新的发行版或 OpenWrt），
-> 请改用仓库 [`nftables-scripts/`](nftables-scripts/) 下的纯 `nftables` 脚本：在面板「资源管理」中把
-> `client_online.sh`、`client_offline.sh`、`server_start.sh`、`server_exit.sh`、`acl_add.sh`、`acl_del.sh` 替换为对应目录下的同名文件；  
-> `generic/` 对应普通 Linux，`openwrt/` 对应 OpenWrt / ImmortalWrt。
+> 请在资源管理中使用nftables脚本。
 
 ## 快速开始
 
@@ -163,10 +161,17 @@ WantedBy=multi-user.target
 ```bash
 cd front && npm install && npm run build && cd ..
 go-bindata -o internal/assets/assets.go -pkg assets -prefix "front/dist" front/dist/...
-go-bindata -o internal/ovpn_server/assets.go -pkg ovpnserver \
-  -prefix "internal/ovpn_server/default_resource" internal/ovpn_server/default_resource/...
+go-bindata -o internal/ovpn_server/resource_sets_assets.go -pkg ovpnserver \
+  -prefix "internal/ovpn_server/resource_sets" internal/ovpn_server/resource_sets/...
+bash scripts/rename_resource_set_assets.sh internal/ovpn_server/resource_sets_assets.go
 go build -ldflags "-X 'main.buildDate=$(date '+%Y-%m-%d %H:%M:%S')'" ./cmd/openvpn-pannel/
 ```
+
+> 内置资源已改为**资源集（resource set）**机制：`internal/ovpn_server/resource_sets/` 下预置 4 套
+> （`linux-iptables`、`linux-nftables`、`openwrt-iptables`、`openwrt-nftables`），每套包含全部 13 个
+> 资源文件（脚本、配置模板、帮助文档与客户端自助页面 `client-page.html`）。面板「资源管理」页可
+> 查看/编辑每套资源并切换当前启用的资源集（切换后需重启服务器进程生效）。也可以直接运行
+> `make assets` 重新生成内嵌资源。
 
 ## 文档
 

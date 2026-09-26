@@ -58,7 +58,7 @@ func TestKeepAliveRestartsCrashedServer(t *testing.T) {
 		ovpnserver.RESOURCE_ID_CLIENT_OFFLINE_SCRIPT: "exit 0",
 		ovpnserver.RESOURCE_ID_AUTH_SCRIPT:           "exit 0",
 	} {
-		if err := dm.WriteResource(id, content); err != nil {
+		if err := dm.WriteResourceBySet(ovpnserver.RESOURCE_SET_LINUX_IPTABLES, id, content); err != nil {
 			t.Fatalf("write resource %s: %v", id, err)
 		}
 	}

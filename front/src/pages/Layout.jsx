@@ -4,7 +4,7 @@ import {
   Toolbar,
   Drawer,
   List,
-  ListItem,
+  ListItemButton,
   ListItemIcon,
   ListItemText,
   Box,
@@ -16,6 +16,7 @@ import {
   useTheme,
 } from '@mui/material';
 import MenuIcon from '@mui/icons-material/Menu';
+import DashboardIcon from '@mui/icons-material/Dashboard';
 import PeopleIcon from '@mui/icons-material/People';
 import SecurityIcon from '@mui/icons-material/Security';
 import StorageIcon from '@mui/icons-material/Storage';
@@ -26,12 +27,13 @@ import HistoryIcon from '@mui/icons-material/History';
 import HelpIcon from '@mui/icons-material/Help';
 import VpnKeyIcon from '@mui/icons-material/VpnKey';
 import SpeedIcon from '@mui/icons-material/Speed';
-import { useNavigate, Outlet } from 'react-router-dom';
+import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { userAPI } from '../api';
 const DRAWER_WIDTH = 240;
 
 const Layout = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const theme = useTheme();
   const isDesktop = useMediaQuery(theme.breakpoints.up('md'));
   const isWideScreen = useMediaQuery('(min-width:1300px)');
@@ -68,6 +70,7 @@ const Layout = () => {
   }, []);
 
   const menuItems = [
+    { label: '首页概览', icon: <DashboardIcon />, path: '/dashboard/home' },
     { label: '用户管理', icon: <PeopleIcon />, path: '/dashboard/users' },
     { label: '用户组管理', icon: <SecurityIcon />, path: '/dashboard/groups' },
     { label: '服务器管理', icon: <StorageIcon />, path: '/dashboard/servers' },
@@ -125,9 +128,9 @@ const Layout = () => {
       </Typography>
       <List sx={{ flex: 1 }}>
         {menuItems.map((item) => (
-          <ListItem
-            button
+          <ListItemButton
             key={item.label}
+            selected={location.pathname === item.path}
             onClick={() => {
               navigate(item.path);
               if (!isWideScreen) {
@@ -137,7 +140,7 @@ const Layout = () => {
           >
             <ListItemIcon>{item.icon}</ListItemIcon>
             <ListItemText primary={item.label} />
-          </ListItem>
+          </ListItemButton>
         ))}
       </List>
       <Box

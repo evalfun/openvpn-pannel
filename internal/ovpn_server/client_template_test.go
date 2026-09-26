@@ -8,7 +8,7 @@ import (
 )
 
 func TestRenderOpenvpnClientConfig(t *testing.T) {
-	templ := GetDefaultResource(RESOURCE_ID_CLIENT_CONFIG)
+	templ := GetSetDefaultResource(RESOURCE_SET_LINUX_IPTABLES, RESOURCE_ID_CLIENT_CONFIG)
 	if strings.TrimSpace(templ) == "" {
 		t.Fatal("client-config default resource is empty")
 	}
@@ -57,7 +57,7 @@ func TestRenderOpenvpnClientConfig(t *testing.T) {
 
 // TestRenderOpenvpnServerConfigIPv6 验证填写 server_cidr6 时渲染出 server-ipv6，留空时不渲染。
 func TestRenderOpenvpnServerConfigIPv6(t *testing.T) {
-	templ := GetDefaultResource(RESOURCE_ID_CONFIG_TEMPLATE)
+	templ := GetSetDefaultResource(RESOURCE_SET_LINUX_IPTABLES, RESOURCE_ID_CONFIG_TEMPLATE)
 	misc := &MiscConfig{
 		ServerConfigFileName: "server.conf", CAFileName: "ca.crt", ServerCertFileName: "server.crt",
 		ServerKeyFileName: "server.key", DHFileName: "dh.pem", TAFileName: "ta.key",

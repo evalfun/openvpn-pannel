@@ -1,6 +1,8 @@
 #!/bin/bash
 go-bindata -o internal/assets/assets.go -pkg  assets -prefix "front/dist" front/dist/...
-go-bindata -o internal/ovpn_server/assets.go -pkg ovpnserver -prefix "internal/ovpn_server/default_resource"  internal/ovpn_server/default_resource/...
+# 资源集内置资源（4 套），符号统一加 ResourceSet 前缀以避免与其它 bindata 冲突
+go-bindata -o internal/ovpn_server/resource_sets_assets.go -pkg ovpnserver -prefix "internal/ovpn_server/resource_sets" internal/ovpn_server/resource_sets/...
+bash scripts/rename_resource_set_assets.sh internal/ovpn_server/resource_sets_assets.go
 
 # 动态编译 适用标准Linux发行版
 # go build -ldflags "-X 'main.buildDate=$(date "+%Y-%m-%d %H:%M:%S")'" ./cmd/openvpn-pannel/ 
