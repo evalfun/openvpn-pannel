@@ -1026,6 +1026,9 @@ type ServerStatusClientInfoResponse struct {
 	LastRef        string   `json:"last_ref"`
 	Username       string   `json:"username"`
 	ACLList        []string `json:"acl_list"`
+	// ClientID 是管理接口 status 2 的客户端 ID，断开连接时用它最精确。
+	// 从状态文件（GetStatusFromFile）读取时为 0，此时断开只能按真实地址匹配。
+	ClientID string `json:"client_id"`
 }
 type ServerStatusResponse struct {
 	Version           string `json:"version"`
@@ -1176,6 +1179,7 @@ func (a *App) GetOpenVPNServerStatusHandler(c *gin.Context, user *models.User) {
 			LastRef:        clientInfo.LastRef,
 			Username:       username,
 			ACLList:        aclStringList,
+			ClientID:       clientInfo.ClientID,
 		})
 	}
 	if err != nil {
@@ -1196,7 +1200,9 @@ func (a *App) GetOpenVPNServerStatusHandler(c *gin.Context, user *models.User) {
 func (a *App) CloseOpenVPNServerClientHandler(c *gin.Context, user *models.User) {
 	type RequestParam struct {
 		ID         uint   `json:"id" binding:"required"`
-		ReadIPAddr string `json:"read_ip_addr" binding:"required,max=100"`
+		ReadIPAddr string `json:"read_ip_addr" binding:"max=100"`
+		// ClientID 为管理接口 status 2 的客户端 ID，提供时优先使用（最精确，且天然支持 IPv6）。
+		ClientID string `json:"client_id" binding:"max=64"`
 	}
 	var param RequestParam
 	err := c.ShouldBindJSON(&param)
@@ -1204,6 +1210,13 @@ func (a *App) CloseOpenVPNServerClientHandler(c *gin.Context, user *models.User)
 		c.JSON(400, gin.H{
 			"result": "failed",
 			"error":  "关闭客户端连接失败: 参数错误",
+		})
+		return
+	}
+	if param.ClientID == "" && param.ReadIPAddr == "" {
+		c.JSON(400, gin.H{
+			"result": "failed",
+			"error":  "关闭客户端连接失败: 需要 client_id 或 read_ip_addr",
 		})
 		return
 	}
@@ -1219,10 +1232,10 @@ func (a *App) CloseOpenVPNServerClientHandler(c *gin.Context, user *models.User)
 		return
 	}
 	// 踢客户端要访问管理 socket，取实例写锁，与其它 socket 操作互斥。
-	// 这里只知道客户端真实地址（ip:port），common_name 由 CloseClient 在管理接口版本 >= 6 时自行反查。
+	// 优先使用 client_id；未提供时由 CloseClient 依据真实地址通过 GetStatus2 反查。
 	pl := a.getProcessLock(param.ID)
 	pl.Lock()
-	message, err := serverInstance.CloseClient("", param.ReadIPAddr, resourceMap)
+	message, err := serverInstance.CloseClient("", param.ReadIPAddr, param.ClientID, resourceMap)
 	pl.Unlock()
 	if err != nil {
 		c.JSON(500, gin.H{

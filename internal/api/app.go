@@ -347,7 +347,7 @@ func (a *App) reconcileRateLimits(serverInstance *ovpnserver.OpenVPNServerInstan
 			// 踢下线要访问管理 socket，与实例的其它操作互斥，取写锁。
 			pl := a.getProcessLock(serverID)
 			pl.Lock()
-			_, killErr := serverInstance.CloseClient(commonName, record.RealIPAddr, resourceMap)
+			_, killErr := serverInstance.CloseClient(commonName, record.RealIPAddr, "", resourceMap)
 			pl.Unlock()
 			if killErr != nil {
 				log.Printf("达量限速踢下线失败 server %d 用户 %s 证书 %s: %v", serverID, record.Username, commonName, killErr)

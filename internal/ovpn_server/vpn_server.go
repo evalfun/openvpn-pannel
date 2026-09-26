@@ -625,6 +625,10 @@ type ServerStatusClientInfoResponse struct {
 	ByteSent       int      `json:"last_byte_sent"`
 	ConnectedSince string   `json:"connected_since"`
 	LastRef        string   `json:"last_ref"`
+	Username       string   `json:"username"`
+	// ClientID 是管理接口 status 2 输出里的客户端 ID（CLIENT_LIST 的 Client ID 列）。
+	// client-kill 命令依赖它，且不区分管理接口版本，因此断开客户端统一走它。
+	ClientID string `json:"client_id"`
 }
 
 // appendVirtualIP 按地址族把虚拟地址追加到 IPv4 / IPv6 列表。
@@ -808,6 +812,109 @@ func (ins *OpenVPNServerInstance) GetStatus(resourceMap map[string]string) (*Ser
 	return serverStatusResponse, nil
 }
 
+// GetStatus2 连接管理接口执行 `status 2`，解析 v2 格式的客户端列表。
+// v2 输出为逐行 "CLIENT_LIST,<字段...>" 记录，字段包含 Client ID（见 status-version 2 定义）：
+//
+//	CLIENT_LIST,Common Name,Real Address,Virtual Address,Virtual IPv6 Address,Bytes Received,
+//	           Bytes Sent,Connected Since,Connected Since (time_t),Username,Client ID,Peer ID,Data Channel Cipher
+//
+// 相比版本字符串判断，Client ID 是断开客户端的稳定标识（client-kill <id>），
+// 因此这里只解析客户端列表，不再依赖管理接口版本。
+func (ins *OpenVPNServerInstance) GetStatus2(resourceMap map[string]string) ([]*ServerStatusClientInfoResponse, error) {
+	miscConfig, err := getMiscConfig(resourceMap)
+	if err != nil {
+		return nil, err
+	}
+	socketName := miscConfig.ManagementSocket
+	log.Println("连接unix socket ", filepath.Join(ins.workingDir, socketName))
+	conn, err := net.Dial("unix", filepath.Join(ins.workingDir, socketName))
+	if err != nil {
+		return nil, err
+	}
+	log.Println("连接unix socket 成功", filepath.Join(ins.workingDir, socketName))
+	defer conn.Close()
+
+	allData, err := execManagementCommand("status 2", conn)
+	if err != nil {
+		return nil, err
+	}
+	return parseStatus2Output(allData), nil
+}
+
+// parseStatus2Output 解析管理接口 `status 2` 的文本输出，返回客户端列表。
+// 抽成纯函数以便单测，不依赖真实管理接口。
+func parseStatus2Output(allData string) []*ServerStatusClientInfoResponse {
+	// CLIENT_LIST 提供客户端主体信息（含 Client ID），ROUTING_TABLE 仅作虚拟地址与
+	// 最后引用时间的兜底补充。这里按出现顺序聚合为客户端列表。
+	clients := make([]*ServerStatusClientInfoResponse, 0)
+
+	lines := strings.Split(allData, "\r\n")
+	for _, line := range lines {
+		switch {
+		case strings.HasPrefix(line, "CLIENT_LIST,"):
+			// CLIENT_LIST,Common Name,Real Address,Virtual Address,Virtual IPv6 Address,Bytes Received,Bytes Sent,Connected Since,Connected Since (time_t),Username,Client ID,Peer ID,Data Channel Cipher
+			fields := strings.Split(line, ",")
+			if len(fields) < 11 {
+				continue
+			}
+			bytesReceived, _ := strconv.Atoi(fields[5])
+			bytesSent, _ := strconv.Atoi(fields[6])
+			client := &ServerStatusClientInfoResponse{
+				CommonName:     fields[1],
+				RealIPAddr:     fields[2],
+				ByteReceived:   bytesReceived,
+				ByteSent:       bytesSent,
+				ConnectedSince: fields[7],
+				Username:       fields[9],
+				ClientID:       fields[10],
+			}
+			appendVirtualIP(client, fields[3])
+			appendVirtualIP(client, fields[4])
+			clients = append(clients, client)
+		case strings.HasPrefix(line, "ROUTING_TABLE,"):
+			// ROUTING_TABLE,Virtual Address,Common Name,Real Address,Last Ref,Last Ref (time_t)
+			fields := strings.Split(line, ",")
+			if len(fields) < 5 {
+				continue
+			}
+			virtualAddr := fields[1]
+			realAddr := fields[3]
+			// 路由表按真实地址匹配到对应客户端，补充虚拟地址(兜底)与最后引用时间。
+			for _, client := range clients {
+				if client.RealIPAddr == realAddr {
+					client.LastRef = fields[4]
+					// CLIENT_LIST 已填过的虚拟地址不重复追加。
+					if !containsVirtualIP(client, virtualAddr) {
+						appendVirtualIP(client, virtualAddr)
+					}
+					break
+				}
+			}
+		}
+	}
+
+	return clients
+}
+
+// containsVirtualIP 判断虚拟地址是否已存在于客户端信息的 IPv4/IPv6 列表中。
+func containsVirtualIP(info *ServerStatusClientInfoResponse, addr string) bool {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return true
+	}
+	for _, a := range info.VirtualIPAddr {
+		if a == addr {
+			return true
+		}
+	}
+	for _, a := range info.VirtualIP6Addr {
+		if a == addr {
+			return true
+		}
+	}
+	return false
+}
+
 // 获取状态 misc
 // 从openvpn-status.log获取日志，实时性没有那么高，但是不会刷openvpn管理socket的日志
 // Version和ManagementVersion无法获取
@@ -925,59 +1032,47 @@ func (ins *OpenVPNServerInstance) GetStatusFromFile(resourceMap map[string]strin
 }
 
 // 关闭客户端连接 misc。
-// commonName 为客户端证书名称（OpenVPN common_name），readIPAddr 为客户端真实地址。
-// 注意：较新版本的 status 输出里 Real Address 形如 "udp4:61.171.212.168:15778"（带协议前缀），
-// 而 kill 命令需要的是 "ip:port"，因此这里统一去掉协议前缀。
-// 不同管理接口版本的 kill 命令不同：
-//   - 版本 <= 5：kill <ip:port>
-//   - 版本 >= 6：kill <common_name>:<port>
+// clientID 为管理接口 status 2 的客户端 ID（最精确，优先使用）；
+// commonName 为客户端证书名称（OpenVPN common_name）；readIPAddr 为客户端真实地址（可能带协议前缀）。
 //
-// 因此这里先通过 GetStatus 探测管理接口版本，再选择对应命令。
-// 版本 >= 6 但未提供 commonName 时，会从当前在线客户端状态里按 readIPAddr 反查证书名。
-func (ins *OpenVPNServerInstance) CloseClient(commonName, readIPAddr string, resourceMap map[string]string) (string, error) {
+// 实现：client-kill 依赖 status 2 的 Client ID，不区分管理接口版本，也避免了对
+// IPv6 真实地址拼接/协议的脆弱解析。若调用方未提供 clientID，则通过 GetStatus2
+// 拉取在线客户端列表，按证书名或真实地址定位到目标客户端再取其 Client ID。
+func (ins *OpenVPNServerInstance) CloseClient(commonName, readIPAddr, clientID string, resourceMap map[string]string) (string, error) {
+	if clientID == "" {
+		// 未提供 ID 时，查询在线客户端以定位目标 Client ID。
+		clientList, err := ins.GetStatus2(resourceMap)
+		if err != nil {
+			// 极个别 openvpn 服务器无法开启管理接口，连接 socket 会失败，
+			// 踢人依赖管理接口，此时无法完成，给出明确提示而不是裸的连接错误。
+			return "", fmt.Errorf("无法连接管理接口(该服务器可能不支持管理接口，无法断开客户端): %w", err)
+		}
+
+		target := findClientForKill(clientList, commonName, readIPAddr)
+		if target == nil {
+			if commonName != "" {
+				return "", fmt.Errorf("未找到在线客户端 证书=%s 地址=%s", commonName, readIPAddr)
+			}
+			return "", fmt.Errorf("未找到在线客户端 地址=%s", readIPAddr)
+		}
+		clientID = target.ClientID
+		if clientID == "" {
+			return "", fmt.Errorf("客户端 证书=%s 地址=%s 缺少 Client ID，无法断开", target.CommonName, target.RealIPAddr)
+		}
+	}
+
 	miscConfig, err := getMiscConfig(resourceMap)
 	if err != nil {
 		return "", err
 	}
-
-	// 去掉可能的协议前缀（如 udp4:），得到标准 "ip:port"
-	addr := stripAddrProto(readIPAddr)
-
-	// 探测管理接口版本（GetStatus 内部会执行 version 命令）
-	status, statusErr := ins.GetStatus(resourceMap)
-	mgmtVersion := 0
-	if statusErr == nil {
-		mgmtVersion = parseManagementVersion(status.ManagementVersion)
-	}
-
-	killArg := addr
-	if mgmtVersion >= 6 {
-		// 版本 6+：kill <common_name>:<port>
-		if commonName == "" && statusErr == nil {
-			for _, c := range status.ClientList {
-				if c.RealIPAddr == readIPAddr || stripAddrProto(c.RealIPAddr) == addr {
-					commonName = c.CommonName
-					break
-				}
-			}
-		}
-		if commonName == "" {
-			return "", fmt.Errorf("管理接口版本 %d 需要证书名称，但无法根据 %s 解析到 common_name", mgmtVersion, readIPAddr)
-		}
-		port := clientPortFromAddr(addr)
-		killArg = fmt.Sprintf("%s:%s", commonName, port)
-	}
-
 	socketName := miscConfig.ManagementSocket
 	conn, err := net.Dial("unix", filepath.Join(ins.workingDir, socketName))
 	if err != nil {
-		// 极个别 openvpn 服务器无法开启管理接口，连接 socket 会失败，
-		// 踢人依赖管理接口，此时无法完成，给出明确提示而不是裸的连接错误。
 		return "", fmt.Errorf("无法连接管理接口(该服务器可能不支持管理接口，无法断开客户端): %w", err)
 	}
-
 	defer conn.Close()
-	if _, err := conn.Write([]byte(fmt.Sprintf("kill %s\n", killArg))); err != nil {
+
+	if _, err := conn.Write([]byte(fmt.Sprintf("client-kill %s\n", clientID))); err != nil {
 		return "", err
 	}
 	reader := bufio.NewReader(conn)
@@ -1008,48 +1103,42 @@ func (ins *OpenVPNServerInstance) CloseClient(commonName, readIPAddr string, res
 	return "", errors.New("未知错误")
 }
 
-// parseManagementVersion 从管理接口返回的版本字符串（如 "6" 或 "5"）解析出主版本号。
-// 解析失败返回 0。
-func parseManagementVersion(version string) int {
-	version = strings.TrimSpace(version)
-	// 允许形如 "6" / "6.0" / "v6" 等写法，取开头的数字
-	start := -1
-	end := -1
-	for i, r := range version {
-		if r >= '0' && r <= '9' {
-			if start == -1 {
-				start = i
+// findClientForKill 在在线客户端列表里定位要断开的客户端。
+// 优先按证书名匹配；证书名为空时按真实地址匹配（兼容 status 输出带协议前缀、
+// 以及脚本上报的 "[ipv6]:port" 与 status 的 "udp6:[ipv6]:port" 等差异）。
+func findClientForKill(clientList []*ServerStatusClientInfoResponse, commonName, readIPAddr string) *ServerStatusClientInfoResponse {
+	if commonName != "" {
+		for _, c := range clientList {
+			if c.CommonName == commonName {
+				return c
 			}
-			end = i
-		} else if start != -1 {
-			break
+		}
+		return nil
+	}
+	want := normalizeRealAddr(readIPAddr)
+	if want == "" {
+		return nil
+	}
+	for _, c := range clientList {
+		if c.RealIPAddr == readIPAddr || normalizeRealAddr(c.RealIPAddr) == want {
+			return c
 		}
 	}
-	if start == -1 {
-		return 0
-	}
-	n, err := strconv.Atoi(version[start : end+1])
-	if err != nil {
-		return 0
-	}
-	return n
+	return nil
 }
 
-// clientPortFromAddr 从 ip:port 形式的地址中取出端口部分；无法解析时返回原字符串。
-func clientPortFromAddr(addr string) string {
-	if _, port, err := net.SplitHostPort(addr); err == nil {
-		return port
-	}
-	// 兜底：取最后一个冒号后的部分（兼容各种非标准写法）
-	if idx := strings.LastIndex(addr, ":"); idx >= 0 && idx+1 < len(addr) {
-		return addr[idx+1:]
-	}
+// normalizeRealAddr 归一化真实地址，便于不同来源（status 输出 / 脚本上报）之间的比较：
+// 去掉协议前缀（如 udp4:/udp6:/tcp4:/tcp6:），去掉 IPv6 地址的方括号，并统一小写。
+func normalizeRealAddr(addr string) string {
+	addr = strings.ToLower(strings.TrimSpace(stripAddrProto(addr)))
+	addr = strings.ReplaceAll(addr, "[", "")
+	addr = strings.ReplaceAll(addr, "]", "")
 	return addr
 }
 
 // stripAddrProto 去掉真实地址里可能出现的协议前缀。
 // 较新版本 OpenVPN 的 status 输出 Real Address 形如 "udp4:61.171.212.168:15778"
-// 或 "tcp6:[2001:db8::1]:15778"，而 kill 命令需要的是 "ip:port"。
+// 或 "tcp6:[2001:db8::1]:15778"，用于与脚本上报的真实地址做归一化比较。
 // 这里去掉开头连续出现的、不以数字或中括号开头的协议段（udp/udp4/udp6/tcp/tcp4/tcp6）。
 func stripAddrProto(addr string) string {
 	addr = strings.TrimSpace(addr)

@@ -37,6 +37,15 @@ log_message() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') [${level}] ${message}" >> "$LOG_FILE"
 }
 
+# 客户端真实地址：OpenVPN 在 IPv4 端点设置 trusted_ip，在 IPv6 端点改设 trusted_ip6。
+# 两者互斥，据此确定真实地址；IPv6 用 [addr]:port 形式避免与端口拼接产生歧义。
+REAL_CLIENT_ADDR=""
+if [ -n "$trusted_ip" ]; then
+    REAL_CLIENT_ADDR="$trusted_ip:$trusted_port"
+elif [ -n "$trusted_ip6" ]; then
+    REAL_CLIENT_ADDR="[$trusted_ip6]:$trusted_port"
+fi
+
 # 从 "4#<cidr>" / "6#<cidr>" 形式的行里提取、去空白、排序去重后的 CIDR 列表（每行一个）
 list_v4_cidrs() {
     tr -d '\r' \
@@ -79,13 +88,13 @@ minor_from_v6() {
 CLIENT_IP4="$ifconfig_pool_remote_ip"
 CLIENT_IP6="$ifconfig_pool_remote_ip6"
 
-log_message "INFO" "用户上线 CertificateName $common_name User $username VirtualIP: $CLIENT_IP4 VirtualIP6: $CLIENT_IP6 ClientIP: $untrusted_ip:$untrusted_port "
+log_message "INFO" "用户上线 CertificateName $common_name User $username VirtualIP: $CLIENT_IP4 VirtualIP6: $CLIENT_IP6 ClientIP: $REAL_CLIENT_ADDR "
 encoded_username=$(echo -n "$username" | base64 -w 0 | tr -d '\n')
 
 # 执行上线命令
 request_body="server_id: $SERVER_ID
 username: $encoded_username
-real_ip_addr: $untrusted_ip:$untrusted_port
+real_ip_addr: $REAL_CLIENT_ADDR
 client_cert_name: $common_name
 virtual_ip_addr: $CLIENT_IP4
 virtual_ip6_addr: $CLIENT_IP6"
@@ -260,7 +269,7 @@ fi
 # 下线时原样取回用于还原同一组哈希，避免会话中途改组 ACL 导致拆不掉）
 request_body="server_id: $SERVER_ID
 username: $encoded_username
-real_ip_addr: $untrusted_ip:$untrusted_port
+real_ip_addr: $REAL_CLIENT_ADDR
 virtual_ip_addr: $CLIENT_IP4
 virtual_ip6_addr: $CLIENT_IP6"
 result=$(curl -s -X POST -d "$request_body" http://$INTERNAL_API/user/acl/get)

@@ -12,9 +12,18 @@ log_message() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') [${level}] ${message}" >> "$LOG_FILE"
 }
 
+# 客户端真实地址：OpenVPN 在 IPv4 端点设置 untrusted_ip，在 IPv6 端点改设 untrusted_ip6。
+# 两者互斥，据此确定真实地址；IPv6 用 [addr]:port 形式避免与端口拼接产生歧义。
+REAL_CLIENT_ADDR=""
+if [ -n "$untrusted_ip" ]; then
+    REAL_CLIENT_ADDR="$untrusted_ip:$untrusted_port"
+elif [ -n "$untrusted_ip6" ]; then
+    REAL_CLIENT_ADDR="[$untrusted_ip6]:$untrusted_port"
+fi
+
 # 检查必要的环境变量
 if [ -z "$username" ] || [ -z "$password" ]; then
-    log_message "ERROR" "$username $password from $untrusted_ip $untrusted_port Missing username or password environment variable."
+    log_message "ERROR" "$username $password from $REAL_CLIENT_ADDR Missing username or password environment variable."
     log_message "$(set)"
     exit 1 # 验证失败
 fi
@@ -31,7 +40,7 @@ encoded_password=$(echo -n "$password" | base64 -w 0 | tr -d '\n')
 http_body="server_id: $SERVER_ID
 username: $encoded_username
 password: $encoded_password
-real_ip_addr: $untrusted_ip:$untrusted_port
+real_ip_addr: $REAL_CLIENT_ADDR
 client_cert_name: $common_name"
 
 resp_body=$(curl -s -X POST -d "$http_body" http://$INTERNAL_API/user/auth -w "\\nstatus=%{http_code}")
@@ -52,15 +61,15 @@ do
 done <<< "$resp_body"
 
 if [ "$status" == "200" ]; then
-log_message "INFO" "User '$username' from $untrusted_ip $untrusted_port authenticated successfully."
+log_message "INFO" "User '$username' from $REAL_CLIENT_ADDR authenticated successfully."
 	exit 0 # 验证成功
 else 
-    log_message "WARNING" "Authentication failed for user '$username' ( $result ) from $untrusted_ip $untrusted_port."
+    log_message "WARNING" "Authentication failed for user '$username' ( $result ) from $REAL_CLIENT_ADDR."
 	echo $result >> $auth_failed_reason_file 
     exit 1 # 验证失败
 fi
 
 # --- 脚本结束 ---
 # 正常情况下不会执行到这里
-log_message "ERROR" "Unexpected error in authentication script for user '$username' from $untrusted_ip $untrusted_port."
+log_message "ERROR" "Unexpected error in authentication script for user '$username' from $REAL_CLIENT_ADDR."
 exit 1

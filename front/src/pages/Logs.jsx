@@ -156,21 +156,35 @@ const Logs = () => {
     };
 
     // 断开客户端连接
-    const handleKillClient = async (realIpAddr) => {
+    const handleKillClient = async (killTarget) => {
         if (!selectedServer) return;
 
-        if (!window.confirm(`确定要断开客户端连接 "${realIpAddr}" 吗？`)) {
+        // 兼容传入客户端对象或纯地址字符串
+        const clientInfo = typeof killTarget === 'object' && killTarget !== null ? killTarget : { real_ip_addr: killTarget };
+        const realIpAddr = clientInfo.real_ip_addr || '';
+        const clientId = clientInfo.client_id || '';
+        const displayName = clientInfo.common_name || realIpAddr || `Client ID ${clientId}`;
+        const loadingKey = clientId || realIpAddr;
+
+        if (!window.confirm(`确定要断开客户端连接 "${displayName}" 吗？`)) {
             return;
         }
 
         try {
-            setKillLoading(realIpAddr);
+            setKillLoading(loadingKey);
             setError(null);
-            
-            const response = await client.post('/server/client/kill', {
-                id: selectedServer.id,
-                read_ip_addr: realIpAddr
-            });
+
+            // 优先使用 status 2 的 client_id（client-kill 精确且支持 IPv6）；
+            // 无 client_id 时回退用真实地址，由后端反查。
+            const payload = { id: selectedServer.id };
+            if (clientId) {
+                payload.client_id = clientId;
+            }
+            if (realIpAddr) {
+                payload.read_ip_addr = realIpAddr;
+            }
+
+            const response = await client.post('/server/client/kill', payload);
 
             if (response.data.result === 'success') {
                 // 刷新状态数据
@@ -729,10 +743,10 @@ const Logs = () => {
                                                                     color="error"
                                                                     size="small"
                                                                     fullWidth
-                                                                    onClick={() => handleKillClient(client.real_ip_addr)}
-                                                                    disabled={killLoading === client.real_ip_addr || statusData.management_available === false}
+                                                                    onClick={() => handleKillClient(client)}
+                                                                    disabled={(killLoading === (client.client_id || client.real_ip_addr)) || statusData.management_available === false}
                                                                 >
-                                                                    {killLoading === client.real_ip_addr ? (
+                                                                    {killLoading === (client.client_id || client.real_ip_addr) ? (
                                                                         <CircularProgress size={20} />
                                                                     ) : (
                                                                         '断开连接'
@@ -831,11 +845,11 @@ const Logs = () => {
                                                                         variant="contained"
                                                                         color="error"
                                                                         size="small"
-                                                                        onClick={() => handleKillClient(client.real_ip_addr)}
-                                                                        disabled={killLoading === client.real_ip_addr || statusData.management_available === false}
+                                                                        onClick={() => handleKillClient(client)}
+                                                                        disabled={(killLoading === (client.client_id || client.real_ip_addr)) || statusData.management_available === false}
                                                                         sx={{ minWidth: '80px' }}
                                                                     >
-                                                                        {killLoading === client.real_ip_addr ? (
+                                                                        {killLoading === (client.client_id || client.real_ip_addr) ? (
                                                                             <CircularProgress size={20} />
                                                                         ) : (
                                                                             '断开'

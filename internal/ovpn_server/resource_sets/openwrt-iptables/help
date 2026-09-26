@@ -554,9 +554,12 @@ curl http://10.8.0.1:8088/logout         # 登出并回收 ACL
 
 | 场景 | 变量 |
 | --- | --- |
-| 认证 `auth.sh` | `username`、`password`、`common_name`、`untrusted_ip`、`untrusted_port` |
-| 上线 `client_online.sh` | `common_name`、`username`、`ifconfig_pool_remote_ip`、`untrusted_ip`、`untrusted_port` |
+| 认证 `auth.sh` | `username`、`password`、`common_name`、`untrusted_ip` / `untrusted_ip6`、`untrusted_port` |
+| 上线 `client_online.sh` | `common_name`、`username`、`ifconfig_pool_remote_ip`、`trusted_ip` / `trusted_ip6`、`trusted_port` |
 | 下线 `client_offline.sh` | 上述之外还有 `bytes_received`、`bytes_sent`、`time_duration` |
+
+> 说明：OpenVPN 在 IPv4 端点设置 `untrusted_ip`（认证）/ `trusted_ip`（上、下线），在 IPv6 端点改设对应的 `*_ip6` 变量，两者互斥。
+> 脚本通过 `REAL_CLIENT_ADDR` 统一取值：IPv4 为 `ip:port`，IPv6 为 `[ip]:port`。
 
 ### 9.4 “其他配置” misc 示例
 

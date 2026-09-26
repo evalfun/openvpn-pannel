@@ -103,42 +103,6 @@ func TestProcessAlive(t *testing.T) {
 	cmd.Wait()
 }
 
-func TestParseManagementVersion(t *testing.T) {
-	cases := []struct {
-		in   string
-		want int
-	}{
-		{"5", 5},
-		{"6", 6},
-		{"6.0", 6},
-		{"v6", 6},
-		{" 6 ", 6},
-		{"", 0},
-		{"unknown", 0},
-	}
-	for _, c := range cases {
-		if got := parseManagementVersion(c.in); got != c.want {
-			t.Errorf("parseManagementVersion(%q) = %d, want %d", c.in, got, c.want)
-		}
-	}
-}
-
-func TestClientPortFromAddr(t *testing.T) {
-	cases := []struct {
-		in   string
-		want string
-	}{
-		{"1.2.3.4:15757", "15757"},
-		{"[2001:db8::1]:15757", "15757"},
-		{"1.2.3.4", "1.2.3.4"},
-	}
-	for _, c := range cases {
-		if got := clientPortFromAddr(c.in); got != c.want {
-			t.Errorf("clientPortFromAddr(%q) = %q, want %q", c.in, got, c.want)
-		}
-	}
-}
-
 func TestStripAddrProto(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -154,5 +118,110 @@ func TestStripAddrProto(t *testing.T) {
 		if got := stripAddrProto(c.in); got != c.want {
 			t.Errorf("stripAddrProto(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+func TestNormalizeRealAddr(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		// status 输出的协议前缀 + 大小写差异，都归一化为同一形式。
+		{"udp4:101.82.177.200:20053", "101.82.177.200:20053"},
+		{"UDP4:101.82.177.200:20053", "101.82.177.200:20053"},
+		{"udp6:[2001:db8::ABCD]:51820", "2001:db8::abcd:51820"},
+		// 脚本上报的 IPv6 写法（带方括号、无协议前缀）。
+		{"[2001:db8::abcd]:51820", "2001:db8::abcd:51820"},
+		{"  203.0.113.9:51820  ", "203.0.113.9:51820"},
+	}
+	for _, c := range cases {
+		if got := normalizeRealAddr(c.in); got != c.want {
+			t.Errorf("normalizeRealAddr(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestParseStatus2Output(t *testing.T) {
+	// 取自真实 `status 2` 输出（含 IPv4 客户端与 IPv6 客户端）。
+	output := "TITLE,OpenVPN 2.7.6 x86_64-openwrt-linux-gnu\r\n" +
+		"TIME,2026-09-26 19:40:04,1790422804\r\n" +
+		"HEADER,CLIENT_LIST,Common Name,Real Address,Virtual Address,Virtual IPv6 Address,Bytes Received,Bytes Sent,Connected Since,Connected Since (time_t),Username,Client ID,Peer ID,Data Channel Cipher\r\n" +
+		"CLIENT_LIST,client-op13,udp4:101.82.177.200:20053,10.12.2.2,fc00:1024:3371::1000,11364,44425,2026-09-26 19:40:01,1790422801,oneplus13,3,0,AES-256-GCM\r\n" +
+		"CLIENT_LIST,client-v6,udp6:[2001:db8::abcd]:51820,,fc00:1024:3371::1001,1,2,2026-09-26 19:41:00,1790422860,user6,7,0,AES-256-GCM\r\n" +
+		"HEADER,ROUTING_TABLE,Virtual Address,Common Name,Real Address,Last Ref,Last Ref (time_t)\r\n" +
+		"ROUTING_TABLE,fc00:1024:3371::1000,client-op13,udp4:101.82.177.200:20053,2026-09-26 19:40:01,1790422801\r\n" +
+		"ROUTING_TABLE,10.12.2.2,client-op13,udp4:101.82.177.200:20053,2026-09-26 19:40:03,1790422803\r\n" +
+		"GLOBAL_STATS,Max bcast/mcast queue length,0\r\n" +
+		"GLOBAL_STATS,dco_enabled,0\r\n" +
+		"END\r\n"
+
+	clients := parseStatus2Output(output)
+	if len(clients) != 2 {
+		t.Fatalf("got %d clients, want 2", len(clients))
+	}
+
+	ipv4 := clients[0]
+	if ipv4.CommonName != "client-op13" || ipv4.ClientID != "3" || ipv4.Username != "oneplus13" {
+		t.Errorf("unexpected ipv4 client: %+v", ipv4)
+	}
+	if ipv4.RealIPAddr != "udp4:101.82.177.200:20053" {
+		t.Errorf("ipv4 real addr = %q", ipv4.RealIPAddr)
+	}
+	// CLIENT_LIST 的 IPv4/IPv6 虚拟地址都各归其位。
+	if len(ipv4.VirtualIPAddr) != 1 || ipv4.VirtualIPAddr[0] != "10.12.2.2" {
+		t.Errorf("ipv4 virtual addr = %#v", ipv4.VirtualIPAddr)
+	}
+	if len(ipv4.VirtualIP6Addr) != 1 || ipv4.VirtualIP6Addr[0] != "fc00:1024:3371::1000" {
+		t.Errorf("ipv4 virtual ip6 addr = %#v", ipv4.VirtualIP6Addr)
+	}
+	if ipv4.ByteReceived != 11364 || ipv4.ByteSent != 44425 {
+		t.Errorf("ipv4 bytes = %d/%d", ipv4.ByteReceived, ipv4.ByteSent)
+	}
+	if ipv4.LastRef != "2026-09-26 19:40:03" {
+		t.Errorf("ipv4 last ref = %q", ipv4.LastRef)
+	}
+
+	ipv6 := clients[1]
+	if ipv6.CommonName != "client-v6" || ipv6.ClientID != "7" {
+		t.Errorf("unexpected ipv6 client: %+v", ipv6)
+	}
+	if ipv6.RealIPAddr != "udp6:[2001:db8::abcd]:51820" {
+		t.Errorf("ipv6 real addr = %q", ipv6.RealIPAddr)
+	}
+	// 空的 IPv4 虚拟地址不应被追加。
+	if len(ipv6.VirtualIPAddr) != 0 {
+		t.Errorf("ipv6 client should have no IPv4 virtual addr, got %#v", ipv6.VirtualIPAddr)
+	}
+}
+
+func TestFindClientForKill(t *testing.T) {
+	clients := []*ServerStatusClientInfoResponse{
+		{CommonName: "client-a", RealIPAddr: "udp4:101.82.177.200:20053", ClientID: "3"},
+		{CommonName: "client-b", RealIPAddr: "udp6:[2001:db8::abcd]:51820", ClientID: "7"},
+	}
+
+	// 按证书名匹配。
+	if got := findClientForKill(clients, "client-b", ""); got == nil || got.ClientID != "7" {
+		t.Errorf("match by common name failed: %+v", got)
+	}
+
+	// 脚本上报的真实地址（IPv4，无协议前缀）应能匹配 status 输出（带协议前缀）。
+	if got := findClientForKill(clients, "", "101.82.177.200:20053"); got == nil || got.ClientID != "3" {
+		t.Errorf("match ipv4 by script addr failed: %+v", got)
+	}
+
+	// 脚本上报 IPv6 真实地址 "[ipv6]:port" 应能匹配 status 的 "udp6:[ipv6]:port"。
+	if got := findClientForKill(clients, "", "[2001:db8::abcd]:51820"); got == nil || got.ClientID != "7" {
+		t.Errorf("match ipv6 by script addr failed: %+v", got)
+	}
+
+	// 未知地址返回 nil。
+	if got := findClientForKill(clients, "", "203.0.113.9:1"); got != nil {
+		t.Errorf("unknown addr should return nil, got %+v", got)
+	}
+
+	// 未知证书名返回 nil。
+	if got := findClientForKill(clients, "nope", ""); got != nil {
+		t.Errorf("unknown common name should return nil, got %+v", got)
 	}
 }
