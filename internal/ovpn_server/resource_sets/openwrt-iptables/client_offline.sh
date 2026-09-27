@@ -67,7 +67,7 @@ minor_from_v4() {
     _d=$(printf '%s' "$1" | cut -d. -f4)
     M=$(( (${_c:-0} << 8) | ${_d:-0} ))
     [ "$M" -le 0 ] && M=1
-    [ "$M" -ge 65535 ] && M=65534
+    [ "$M" -ge 32768 ] && M=32767
     [ "$M" -eq 9999 ] && M=9998
     printf '%s' "$M"
 }
@@ -77,7 +77,7 @@ minor_from_v6() {
     case "$_h" in ''|*[!0-9a-fA-F]*) _h=0 ;; esac
     M=$(( 16#${_h:-0} ))
     [ "$M" -le 0 ] && M=1
-    [ "$M" -ge 65535 ] && M=65534
+    [ "$M" -ge 32768 ] && M=32767
     [ "$M" -eq 9999 ] && M=9998
     printf '%s' "$M"
 }
@@ -131,26 +131,30 @@ if { [ -n "$CLIENT_IP4" ] || [ -n "$CLIENT_IP6" ]; } && /sbin/ip link show "$TC_
     else
         MINOR=$(minor_from_v6 "$CLIENT_IP6")
     fi
+        # classid 用十六进制（tc 的 classid 按十六进制解析）；prio 用十进制且 v4/v6 分开，
+        # 因为 tc 的 filter pref 在同一 parent 下全局唯一，v4/v6 复用同一 prio 会导致后者静默失败。
+        MINOR_H=$(printf '%x' "$MINOR")
+        PRIO6=$(( MINOR | 32768 ))
 
     # 上传（主接口 root htb）
     $TC_BIN filter del dev "$TC_DEV" parent 1: protocol ip prio $MINOR u32 2>/dev/null || true
-    $TC_BIN filter del dev "$TC_DEV" parent 1: protocol ipv6 prio $MINOR u32 2>/dev/null || true
-    $TC_BIN class del dev "$TC_DEV" classid 1:$MINOR 2>/dev/null || true
+    $TC_BIN filter del dev "$TC_DEV" parent 1: protocol ipv6 prio $PRIO6 u32 2>/dev/null || true
+    $TC_BIN class del dev "$TC_DEV" classid 1:$MINOR_H 2>/dev/null || true
     # 下载：主接口 ingress 上的 redirect/police 过滤器
     $TC_BIN filter del dev "$TC_DEV" parent ffff: protocol ip prio $MINOR u32 2>/dev/null || true
-    $TC_BIN filter del dev "$TC_DEV" parent ffff: protocol ipv6 prio $MINOR u32 2>/dev/null || true
+    $TC_BIN filter del dev "$TC_DEV" parent ffff: protocol ipv6 prio $PRIO6 u32 2>/dev/null || true
     # 下载：ifb 上的 HTB 类与过滤器（若存在）
     if $IP_BIN link show "$IFB_DEV" >/dev/null 2>&1; then
         $TC_BIN filter del dev "$IFB_DEV" parent 1: protocol ip prio $MINOR u32 2>/dev/null || true
-        $TC_BIN filter del dev "$IFB_DEV" parent 1: protocol ipv6 prio $MINOR u32 2>/dev/null || true
-        $TC_BIN class del dev "$IFB_DEV" classid 1:$MINOR 2>/dev/null || true
+        $TC_BIN filter del dev "$IFB_DEV" parent 1: protocol ipv6 prio $PRIO6 u32 2>/dev/null || true
+        $TC_BIN class del dev "$IFB_DEV" classid 1:$MINOR_H 2>/dev/null || true
         # ifb 上已无自定义类（只剩默认 9999）时，可删除 ifb 设备回收资源
         REMAIN_CLS=$($TC_BIN class show dev "$IFB_DEV" 2>/dev/null | grep -c 'class htb 1:' || true)
         if [ "${REMAIN_CLS:-0}" -le 1 ]; then
             $IP_BIN link del "$IFB_DEV" 2>/dev/null || true
         fi
     fi
-    log_message "INFO" "用户 User $username VirtualIP: $CLIENT_IP4/$CLIENT_IP6 已清理 tc 限速 classid 1:$MINOR"
+    log_message "INFO" "用户 User $username VirtualIP: $CLIENT_IP4/$CLIENT_IP6 已清理 tc 限速 classid 1:$MINOR_H"
     ) 9>"$LOCK_FILE"
 fi
 

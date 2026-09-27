@@ -62,6 +62,7 @@ func main() {
 			InternalAPIListen: "127.0.0.1:59003",
 			ClientPageListen:  "0.0.0.0:8088",
 			MaxLogSizeKB:      16384,
+			MaxMemoryEvents:   0,
 			WorkingDir:        "/tmp/openvpn-pannel",
 			SQLiteDB:          "data.db",
 			AllowEditResource: false,

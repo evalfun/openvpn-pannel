@@ -178,6 +178,10 @@ func (a *App) ListResourceHandler(c *gin.Context, user *models.User) {
 	type ResourceResponse struct {
 		ID          string `json:"id"`
 		Description string `json:"description"`
+		// Overridden 表示数据库中已有一条覆盖记录（用户保存过或首次使用时已种子化）。
+		Overridden bool `json:"overridden"`
+		// Modified 表示当前内容与内置默认值不一致（即被用户改过）。重置后回落默认，为 false。
+		Modified bool `json:"modified"`
 	}
 	type SetResponse struct {
 		ID          string `json:"id"`
@@ -186,6 +190,18 @@ func (a *App) ListResourceHandler(c *gin.Context, user *models.User) {
 		Active      bool   `json:"active"`
 	}
 	activeSetID := a.GetActiveResourceSetID()
+
+	// 查看的资源集：默认当前启用集；显式传入时校验合法性。
+	viewSetID := c.DefaultQuery("set", "")
+	if viewSetID == "" {
+		viewSetID = activeSetID
+	} else if !ovpnserver.IsValidResourceSet(viewSetID) {
+		c.JSON(400, gin.H{
+			"result": "failed",
+			"error":  "获取资源列表失败: 资源集不存在",
+		})
+		return
+	}
 
 	setList := []SetResponse{}
 	for _, s := range ovpnserver.ListResourceSets() {
@@ -197,11 +213,25 @@ func (a *App) ListResourceHandler(c *gin.Context, user *models.User) {
 		})
 	}
 
+	// 读取该资源集在数据库中的全部覆盖记录，用于判断每个资源是否被修改过。
+	// 说明：资源集首次使用时会把全部资源种子化进数据库，因此“存在记录”不等于“被改过”，
+	// 还要比对内容与内置默认值是否一致。
+	overrides := make(map[string]string)
+	if list, err := a.daoManager.GetResourceByIDListInSet(viewSetID, allResourceIDs()); err == nil {
+		for _, r := range list {
+			overrides[r.ID] = r.Content
+		}
+	}
+
 	resourceList := []ResourceResponse{}
 	for _, item := range ovpnserver.ListResourceIDs() {
+		content, overridden := overrides[item.ID]
+		modified := overridden && content != ovpnserver.GetSetDefaultResource(viewSetID, item.ID)
 		resourceList = append(resourceList, ResourceResponse{
 			ID:          item.ID,
 			Description: item.Description,
+			Overridden:  overridden,
+			Modified:    modified,
 		})
 	}
 
@@ -211,7 +241,17 @@ func (a *App) ListResourceHandler(c *gin.Context, user *models.User) {
 		// allow_edit 由 config.json 的 allow_edit_resource 决定，前端据此禁用编辑/重置按钮。
 		"allow_edit": a.cfg.AllowEditResource,
 		"active_set": activeSetID,
+		"view_set":   viewSetID,
 		"sets":       setList,
 		"data":       resourceList,
 	})
+}
+
+// allResourceIDs 返回资源集应包含的全部资源 ID（供按集合批量查询使用）。
+func allResourceIDs() []string {
+	ids := []string{}
+	for _, item := range ovpnserver.ListResourceIDs() {
+		ids = append(ids, item.ID)
+	}
+	return ids
 }

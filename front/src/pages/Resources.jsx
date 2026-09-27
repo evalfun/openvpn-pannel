@@ -28,6 +28,8 @@ import client from '../api/client';
 
 const Resources = () => {
   const initializedRef = useRef(false);
+  // 记录上一次已加载的资源集，避免 viewSet 副作用重复请求。
+  const loadedSetRef = useRef(null);
   const [resources, setResources] = useState([]);
   const [sets, setSets] = useState([]);
   const [activeSet, setActiveSet] = useState('');
@@ -43,17 +45,21 @@ const Resources = () => {
   // allow_edit 由后端 config.json 的 allow_edit_resource 决定
   const [allowEdit, setAllowEdit] = useState(false);
 
-  // 获取资源列表（含资源集）
-  const fetchResources = async () => {
+  // 获取资源列表（含资源集）。setID 为空时由后端使用当前启用资源集。
+  // “修改过”状态与资源集相关，因此会把实际加载的资源集记为 loadedSetRef。
+  const fetchResources = async (setID) => {
     try {
       setLoading(true);
       setError(null);
-      const response = await client.get('/resource/list');
+      const query = setID ? `?set=${encodeURIComponent(setID)}` : '';
+      const response = await client.get(`/resource/list${query}`);
       setResources(response.data.data || []);
       setSets(response.data.sets || []);
       setActiveSet(response.data.active_set || '');
+      const loadedSet = response.data.view_set || setID || response.data.active_set || '';
+      loadedSetRef.current = loadedSet;
       // 默认查看当前启用的资源集
-      setViewSet((prev) => prev || response.data.active_set || '');
+      setViewSet((prev) => prev || loadedSet);
       setAllowEdit(!!response.data.allow_edit);
     } catch (err) {
       setError('加载资源列表失败：' + (err.response?.data?.error || err.message));
@@ -74,12 +80,8 @@ const Resources = () => {
       setSuccessMessage('已切换资源集，请重启相关服务器进程使其生效');
       setActiveSet(setId);
       setViewSet(setId);
-      // 重新加载（sets 中的 active 标记需要刷新）
-      const response = await client.get('/resource/list');
-      setResources(response.data.data || []);
-      setSets(response.data.sets || []);
-      setActiveSet(response.data.active_set || '');
-      setAllowEdit(!!response.data.allow_edit);
+      // 重新加载（sets 中的 active 标记需要刷新），并更新“修改过”状态
+      await fetchResources(setId);
     } catch (err) {
       setError('切换资源集失败：' + (err.response?.data?.error || err.message));
     } finally {
@@ -114,6 +116,8 @@ const Resources = () => {
       });
       setSuccessMessage('资源已成功保存');
       setEditDialogOpen(false);
+      // 保存后刷新列表，使“修改过”状态即时更新
+      await fetchResources(viewSet);
     } catch (err) {
       setDialogError('保存资源失败：' + (err.response?.data?.error || err.message));
     } finally {
@@ -133,6 +137,8 @@ const Resources = () => {
         });
         setSuccessMessage('资源已成功重置为内置默认值');
         setEditDialogOpen(false);
+        // 重置后刷新列表，使“修改过”状态即时更新
+        await fetchResources(viewSet);
       } catch (err) {
         setDialogError('重置资源失败：' + (err.response?.data?.error || err.message));
       } finally {
@@ -156,6 +162,13 @@ const Resources = () => {
       fetchResources();
     }
   }, []);
+
+  // 切换“查看的资源集”时重新加载列表，使“修改过”状态按所选资源集刷新。
+  // 初始加载时 viewSet 由 fetchResources 回填，loadedSetRef 已记录，故不会重复请求。
+  useEffect(() => {
+    if (!viewSet || loadedSetRef.current === viewSet) return;
+    fetchResources(viewSet);
+  }, [viewSet]);
 
   const viewSetInfo = sets.find((s) => s.id === viewSet);
   const isViewingActive = viewSet === activeSet;
@@ -239,6 +252,7 @@ const Resources = () => {
                 <TableRow sx={{ backgroundColor: '#f5f5f5' }}>
                   <TableCell sx={{ fontWeight: 'bold', paddingTop: 0.5, paddingBottom: 0.5 }}>资源ID</TableCell>
                   <TableCell sx={{ fontWeight: 'bold', paddingTop: 0.5, paddingBottom: 0.5 }}>描述</TableCell>
+                  <TableCell sx={{ fontWeight: 'bold', paddingTop: 0.5, paddingBottom: 0.5 }}>修改过</TableCell>
                   <TableCell sx={{ fontWeight: 'bold', paddingTop: 0.5, paddingBottom: 0.5 }}>
                     操作
                   </TableCell>
@@ -249,6 +263,17 @@ const Resources = () => {
                   <TableRow key={resource.id} hover>
                     <TableCell sx={{ paddingTop: 0.5, paddingBottom: 0.5 }}>{resource.id}</TableCell>
                     <TableCell sx={{ paddingTop: 0.5, paddingBottom: 0.5 }}>{resource.description}</TableCell>
+                    <TableCell sx={{ paddingTop: 0.5, paddingBottom: 0.5 }}>
+                      {resource.modified ? (
+                        <Typography variant="body2" sx={{ color: 'warning.main', fontWeight: 'bold' }}>
+                          是
+                        </Typography>
+                      ) : (
+                        <Typography variant="body2" color="textSecondary">
+                          否
+                        </Typography>
+                      )}
+                    </TableCell>
                     <TableCell sx={{ paddingTop: 0.5, paddingBottom: 0.5 }}>
                       <Button
                         size="small"

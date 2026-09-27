@@ -13,15 +13,36 @@ import (
 type DaoManager struct {
 	DB  *gorm.DB
 	cfg *config.Config
+	// eventMemory 在 cfg.MaxMemoryEvents > 0 时非空：事件改为保存到内存而非数据库。
+	eventMemory *eventMemoryStore
+	// runtimeMemory 在 cfg.MaxMemoryEvents > 0 时非空：在线会话、已下发 ACL、达量限速周期
+	// 等日常运行频繁变化的数据改为保存在内存中，使日常运行期间数据库只读。
+	runtimeMemory *runtimeMemoryStore
 }
 
 func NewDaoManager(cfg *config.Config) (*DaoManager, error) {
 	db, err := models.ConnectDB(cfg)
 
-	return &DaoManager{
+	um := &DaoManager{
 		DB:  db,
 		cfg: cfg,
-	}, err
+	}
+	if cfg.MaxMemoryEvents > 0 {
+		um.eventMemory = newEventMemoryStore(cfg.MaxMemoryEvents)
+		um.runtimeMemory = newRuntimeMemoryStore()
+	}
+	return um, err
+}
+
+// useMemoryEvents 返回是否启用内存事件（config.max_memory_events > 0）。
+func (um *DaoManager) useMemoryEvents() bool {
+	return um != nil && um.eventMemory != nil
+}
+
+// useMemoryRuntime 返回是否启用内存运行时数据（在线会话/ACL/限速周期）。
+// 与内存事件同时启用（均由 config.max_memory_events > 0 触发）。
+func (um *DaoManager) useMemoryRuntime() bool {
+	return um != nil && um.runtimeMemory != nil
 }
 func (um *DaoManager) CreateUser(username, password, description string, rateLimitType uint, uploadLimitKB, downloadLimitKB uint64) error {
 
@@ -115,9 +136,12 @@ func (um *DaoManager) AuthUser(username, password string) (*models.User, error) 
 		authenticated = passwd.VerifyBcrypt(user.Password, password)
 	} else if passwd.VerifyLegacySHA256(user.Password, password, um.cfg.PasswordSalt) {
 		// 旧版 sha256(password+盐) 校验通过：透明升级为 bcrypt，升级失败不影响本次登录。
+		// 内存模式（max_memory_events>0）下为避免日常运行写库，跳过升级；下次运维改密码时会自然升级。
 		authenticated = true
-		if upgraded, herr := passwd.Hash(password); herr == nil {
-			um.DB.Model(&models.User{}).Where("id = ?", user.ID).Update("password", upgraded)
+		if !um.useMemoryRuntime() {
+			if upgraded, herr := passwd.Hash(password); herr == nil {
+				um.DB.Model(&models.User{}).Where("id = ?", user.ID).Update("password", upgraded)
+			}
 		}
 	}
 	if !authenticated {
@@ -152,6 +176,13 @@ func (um *DaoManager) BlukDeleteUser(userIDList []uint) error {
 		tx.Rollback()
 		return fmt.Errorf("删除用户组中的用户记录失败: 提交事务失败: %s", err.Error())
 	}
+	// 内存模式：清理被删除用户的内存态数据（终身流量/周期/在线会话）。
+	if um.useMemoryRuntime() {
+		for _, id := range userIDList {
+			um.runtimeMemory.deleteLifetime(id)
+			um.runtimeMemory.deleteCycle(id)
+		}
+	}
 	return nil
 }
 
@@ -161,6 +192,7 @@ func (um *DaoManager) GetUserByID(userID uint) (*models.User, error) {
 	if err != nil {
 		return nil, err
 	}
+	um.overlayCycle(&user)
 	return &user, nil
 }
 
@@ -170,6 +202,7 @@ func (um *DaoManager) GetUserByUsername(username string) (*models.User, error) {
 	if err != nil {
 		return nil, err
 	}
+	um.overlayCycle(&user)
 	return &user, nil
 }
 
@@ -214,6 +247,14 @@ func (um *DaoManager) SetUserMFA(userID uint, mfaType uint, data string) error {
 }
 
 func (um *DaoManager) UpdateUserTraffic(username string, uploadBytes, downloadBytes uint64) error {
+	if um.useMemoryRuntime() {
+		user, err := um.GetUserByUsername(username)
+		if err != nil {
+			return err
+		}
+		um.runtimeMemory.addLifetime(user.ID, uploadBytes, downloadBytes)
+		return nil
+	}
 	result := um.DB.Model(&models.User{}).
 		Where("username = ?", username).
 		Updates(map[string]interface{}{
@@ -253,7 +294,14 @@ func (um *DaoManager) ResetUserTraffic(userID uint) error {
 		tx.Rollback()
 		return err
 	}
-	return tx.Commit().Error
+	if err := tx.Commit().Error; err != nil {
+		return err
+	}
+	if um.useMemoryRuntime() {
+		um.runtimeMemory.resetTrafficByUsernames(map[string]bool{user.Username: true})
+		um.runtimeMemory.setLifetime(user.ID, 0, 0)
+	}
+	return nil
 }
 
 // BatchResetUserTraffic 批量清除多个用户的流量记录（历史流量与当前在线会话流量）。
@@ -291,7 +339,22 @@ func (um *DaoManager) BatchResetUserTraffic(userIDList []uint) error {
 			return err
 		}
 	}
-	return tx.Commit().Error
+	if err := tx.Commit().Error; err != nil {
+		return err
+	}
+	if um.useMemoryRuntime() && len(usernames) > 0 {
+		set := make(map[string]bool, len(usernames))
+		for _, name := range usernames {
+			set[name] = true
+		}
+		um.runtimeMemory.resetTrafficByUsernames(set)
+		ids := make([]uint, 0, len(users))
+		for _, u := range users {
+			ids = append(ids, u.ID)
+		}
+		um.runtimeMemory.resetLifetimeByUserIDs(ids)
+	}
+	return nil
 }
 
 // 查询用户数量（excludePlanID != 0 时排除已关联该限速方案的用户）
@@ -332,6 +395,9 @@ func (um *DaoManager) ListUsers(page int, pageSize int, queryName string, exclud
 	result := base.Limit(pageSize).Offset((page - 1) * pageSize).Find(&userList)
 	if result.Error != nil {
 		return nil, errors.New("列出用户失败 " + result.Error.Error())
+	}
+	for _, u := range userList {
+		um.overlayCycle(u)
 	}
 	return userList, nil
 }

@@ -13,6 +13,10 @@ type CertificateEventListResponse struct {
 
 // CreateCertificateEvent 记录一条证书事件。
 func (um *DaoManager) CreateCertificateEvent(event *models.CertificateEvent) error {
+	if um.useMemoryEvents() {
+		um.eventMemory.appendCertEvent(event)
+		return nil
+	}
 	return um.DB.Create(event).Error
 }
 
@@ -23,6 +27,10 @@ func (um *DaoManager) GetCertificateEventList(eventTypeList []int, query string,
 	}
 	if pageSize <= 0 {
 		pageSize = 20
+	}
+	if um.useMemoryEvents() {
+		events, total := um.eventMemory.listCertEvents(eventTypeList, query, startTime, endTime, page, pageSize)
+		return &CertificateEventListResponse{EventList: events, Total: total}, nil
 	}
 	buildQuery := func() *gorm.DB {
 		db := um.DB.Model(&models.CertificateEvent{})
@@ -53,5 +61,9 @@ func (um *DaoManager) GetCertificateEventList(eventTypeList []int, query string,
 
 // ClearCertificateEvent 清空所有证书事件。
 func (um *DaoManager) ClearCertificateEvent() error {
+	if um.useMemoryEvents() {
+		um.eventMemory.clearCertEvents()
+		return nil
+	}
 	return um.DB.Where("1 = 1").Delete(&models.CertificateEvent{}).Error
 }

@@ -63,24 +63,26 @@ list_v6_cidrs() {
 }
 
 # 由虚拟 IPv4 末两段推导 classid/prio（同一 /24 内唯一），避开保留的 0 与默认类 9999。
+# 注意：tc 的 classid/prio 均按十六进制解析，这里必须输出十六进制字符串，
+# 否则形如 1:24834 会超出 16 位(minor>0xFFFF)被 tc 判为 invalid class ID。
 minor_from_v4() {
     local _c _d M
     _c=$(printf '%s' "$1" | cut -d. -f3)
     _d=$(printf '%s' "$1" | cut -d. -f4)
     M=$(( (${_c:-0} << 8) | ${_d:-0} ))
     [ "$M" -le 0 ] && M=1
-    [ "$M" -ge 65535 ] && M=65534
+    [ "$M" -ge 32768 ] && M=32767
     [ "$M" -eq 9999 ] && M=9998
     printf '%s' "$M"
 }
-# 纯 IPv6 客户端：由 IPv6 末 16 位推导独立 classid/prio。
+# 纯 IPv6 客户端：由 IPv6 末 16 位推导独立 classid/prio（同样输出十六进制字符串）。
 minor_from_v6() {
     local _h M
     _h=${1##*:}
     case "$_h" in ''|*[!0-9a-fA-F]*) _h=0 ;; esac
     M=$(( 16#${_h:-0} ))
     [ "$M" -le 0 ] && M=1
-    [ "$M" -ge 65535 ] && M=65534
+    [ "$M" -ge 32768 ] && M=32767
     [ "$M" -eq 9999 ] && M=9998
     printf '%s' "$M"
 }
@@ -186,6 +188,10 @@ if { [ -n "$CLIENT_IP4" ] || [ -n "$CLIENT_IP6" ]; } && { [ "$UPLOAD_KB" -gt 0 ]
         else
             MINOR=$(minor_from_v6 "$CLIENT_IP6")
         fi
+        # classid 用十六进制（tc 的 classid 按十六进制解析）；prio 用十进制且 v4/v6 分开，
+        # 因为 tc 的 filter pref 在同一 parent 下全局唯一，v4/v6 复用同一 prio 会导致后者静默失败。
+        MINOR_H=$(printf '%x' "$MINOR")
+        PRIO6=$(( MINOR | 32768 ))
 
         if [ "$UPLOAD_KB" -gt 0 ]; then
             # 根 qdisc 仅在缺失时创建，避免清掉其它在线客户端的类与过滤器
@@ -197,18 +203,20 @@ if { [ -n "$CLIENT_IP4" ] || [ -n "$CLIENT_IP6" ]; } && { [ "$UPLOAD_KB" -gt 0 ]
             # burst 按速率估算，最小 3000 字节，避免过小被 tc 拒绝
             UPLOAD_BURST=$((UPLOAD_KBIT * 12))
             [ "$UPLOAD_BURST" -lt 3000 ] && UPLOAD_BURST=3000
-            $TC_BIN class add dev "$TC_DEV" parent 1: classid 1:$MINOR htb rate ${UPLOAD_KBIT}kbit ceil ${UPLOAD_KBIT}kbit burst ${UPLOAD_BURST} cburst ${UPLOAD_BURST} quantum 1500 2>/dev/null \
-                || $TC_BIN class change dev "$TC_DEV" classid 1:$MINOR htb rate ${UPLOAD_KBIT}kbit ceil ${UPLOAD_KBIT}kbit burst ${UPLOAD_BURST} cburst ${UPLOAD_BURST} quantum 1500
+            if ! { $TC_BIN class add dev "$TC_DEV" parent 1: classid 1:$MINOR_H htb rate ${UPLOAD_KBIT}kbit ceil ${UPLOAD_KBIT}kbit burst ${UPLOAD_BURST} cburst ${UPLOAD_BURST} quantum 1500 2>/dev/null \
+                || $TC_BIN class change dev "$TC_DEV" classid 1:$MINOR_H htb rate ${UPLOAD_KBIT}kbit ceil ${UPLOAD_KBIT}kbit burst ${UPLOAD_BURST} cburst ${UPLOAD_BURST} quantum 1500; }; then
+                log_message "WARNING" "用户 User $username 上传限速设置失败 虚拟IP $CLIENT_IP4/$CLIENT_IP6 classid 1:$MINOR_H"
+            fi
             # 先按 prio 清除该客户端旧过滤器再加，保证重复上线不产生重复过滤项(prio 唯一即只影响本客户端)
             if [ -n "$CLIENT_IP4" ]; then
                 $TC_BIN filter del dev "$TC_DEV" parent 1: protocol ip prio $MINOR u32 2>/dev/null || true
-                $TC_BIN filter add dev "$TC_DEV" parent 1: protocol ip prio $MINOR u32 match ip dst ${CLIENT_IP4}/32 flowid 1:$MINOR
+                $TC_BIN filter add dev "$TC_DEV" parent 1: protocol ip prio $MINOR u32 match ip dst ${CLIENT_IP4}/32 flowid 1:$MINOR_H
             fi
             if [ -n "$CLIENT_IP6" ]; then
-                $TC_BIN filter del dev "$TC_DEV" parent 1: protocol ipv6 prio $MINOR u32 2>/dev/null || true
-                $TC_BIN filter add dev "$TC_DEV" parent 1: protocol ipv6 prio $MINOR u32 match ip6 dst ${CLIENT_IP6}/128 flowid 1:$MINOR
+                $TC_BIN filter del dev "$TC_DEV" parent 1: protocol ipv6 prio $PRIO6 u32 2>/dev/null || true
+                $TC_BIN filter add dev "$TC_DEV" parent 1: protocol ipv6 prio $PRIO6 u32 match ip6 dst ${CLIENT_IP6}/128 flowid 1:$MINOR_H
             fi
-            log_message "INFO" "用户 User $username VirtualIP: $CLIENT_IP4/$CLIENT_IP6 上传限速已设置 ${UPLOAD_KB}KB/s classid 1:$MINOR"
+            log_message "INFO" "用户 User $username VirtualIP: $CLIENT_IP4/$CLIENT_IP6 上传限速已设置 ${UPLOAD_KB}KB/s classid 1:$MINOR_H"
         fi
 
         if [ "$DOWNLOAD_KB" -gt 0 ]; then
@@ -224,21 +232,23 @@ if { [ -n "$CLIENT_IP4" ] || [ -n "$CLIENT_IP6" ]; } && { [ "$UPLOAD_KB" -gt 0 ]
                     $TC_BIN qdisc add dev "$IFB_DEV" root handle 1: htb default 9999 2>/dev/null
                     $TC_BIN class add dev "$IFB_DEV" parent 1: classid 1:9999 htb rate 100gbit ceil 100gbit burst 15k cburst 15k quantum 1500 2>/dev/null
                 fi
-                $TC_BIN class add dev "$IFB_DEV" parent 1: classid 1:$MINOR htb rate ${DOWNLOAD_KBIT}kbit ceil ${DOWNLOAD_KBIT}kbit burst ${DOWNLOAD_BURST} cburst ${DOWNLOAD_BURST} quantum 1500 2>/dev/null \
-                    || $TC_BIN class change dev "$IFB_DEV" classid 1:$MINOR htb rate ${DOWNLOAD_KBIT}kbit ceil ${DOWNLOAD_KBIT}kbit burst ${DOWNLOAD_BURST} cburst ${DOWNLOAD_BURST} quantum 1500
+                if ! { $TC_BIN class add dev "$IFB_DEV" parent 1: classid 1:$MINOR_H htb rate ${DOWNLOAD_KBIT}kbit ceil ${DOWNLOAD_KBIT}kbit burst ${DOWNLOAD_BURST} cburst ${DOWNLOAD_BURST} quantum 1500 2>/dev/null \
+                    || $TC_BIN class change dev "$IFB_DEV" classid 1:$MINOR_H htb rate ${DOWNLOAD_KBIT}kbit ceil ${DOWNLOAD_KBIT}kbit burst ${DOWNLOAD_BURST} cburst ${DOWNLOAD_BURST} quantum 1500; }; then
+                    log_message "WARNING" "用户 User $username 下载限速(ifb)设置失败 虚拟IP $CLIENT_IP4/$CLIENT_IP6 classid 1:$MINOR_H dev=$IFB_DEV"
+                fi
                 if [ -n "$CLIENT_IP4" ]; then
                     $TC_BIN filter del dev "$TC_DEV" parent ffff: protocol ip prio $MINOR u32 2>/dev/null || true
                     $TC_BIN filter add dev "$TC_DEV" parent ffff: protocol ip prio $MINOR u32 match ip src ${CLIENT_IP4}/32 action mirred egress redirect dev "$IFB_DEV"
                     $TC_BIN filter del dev "$IFB_DEV" parent 1: protocol ip prio $MINOR u32 2>/dev/null || true
-                    $TC_BIN filter add dev "$IFB_DEV" parent 1: protocol ip prio $MINOR u32 match ip src ${CLIENT_IP4}/32 flowid 1:$MINOR
+                    $TC_BIN filter add dev "$IFB_DEV" parent 1: protocol ip prio $MINOR u32 match ip src ${CLIENT_IP4}/32 flowid 1:$MINOR_H
                 fi
                 if [ -n "$CLIENT_IP6" ]; then
-                    $TC_BIN filter del dev "$TC_DEV" parent ffff: protocol ipv6 prio $MINOR u32 2>/dev/null || true
-                    $TC_BIN filter add dev "$TC_DEV" parent ffff: protocol ipv6 prio $MINOR u32 match ip6 src ${CLIENT_IP6}/128 action mirred egress redirect dev "$IFB_DEV"
-                    $TC_BIN filter del dev "$IFB_DEV" parent 1: protocol ipv6 prio $MINOR u32 2>/dev/null || true
-                    $TC_BIN filter add dev "$IFB_DEV" parent 1: protocol ipv6 prio $MINOR u32 match ip6 src ${CLIENT_IP6}/128 flowid 1:$MINOR
+                    $TC_BIN filter del dev "$TC_DEV" parent ffff: protocol ipv6 prio $PRIO6 u32 2>/dev/null || true
+                    $TC_BIN filter add dev "$TC_DEV" parent ffff: protocol ipv6 prio $PRIO6 u32 match ip6 src ${CLIENT_IP6}/128 action mirred egress redirect dev "$IFB_DEV"
+                    $TC_BIN filter del dev "$IFB_DEV" parent 1: protocol ipv6 prio $PRIO6 u32 2>/dev/null || true
+                    $TC_BIN filter add dev "$IFB_DEV" parent 1: protocol ipv6 prio $PRIO6 u32 match ip6 src ${CLIENT_IP6}/128 flowid 1:$MINOR_H
                 fi
-                log_message "INFO" "用户 User $username VirtualIP: $CLIENT_IP4/$CLIENT_IP6 下载限速已设置(ifb) ${DOWNLOAD_KB}KB/s classid 1:$MINOR dev=$IFB_DEV"
+                log_message "INFO" "用户 User $username VirtualIP: $CLIENT_IP4/$CLIENT_IP6 下载限速已设置(ifb) ${DOWNLOAD_KB}KB/s classid 1:$MINOR_H dev=$IFB_DEV"
                 ;;
             police)
                 $TC_BIN qdisc add dev "$TC_DEV" handle ffff: ingress 2>/dev/null || true
@@ -249,8 +259,8 @@ if { [ -n "$CLIENT_IP4" ] || [ -n "$CLIENT_IP6" ]; } && { [ "$UPLOAD_KB" -gt 0 ]
                     fi
                 fi
                 if [ -n "$CLIENT_IP6" ]; then
-                    $TC_BIN filter del dev "$TC_DEV" parent ffff: protocol ipv6 prio $MINOR u32 2>/dev/null || true
-                    if ! $TC_BIN filter add dev "$TC_DEV" parent ffff: protocol ipv6 prio $MINOR u32 match ip6 src ${CLIENT_IP6}/128 police rate ${DOWNLOAD_KBIT}kbit burst ${DOWNLOAD_BURST} drop flowid :1 2>/dev/null; then
+                    $TC_BIN filter del dev "$TC_DEV" parent ffff: protocol ipv6 prio $PRIO6 u32 2>/dev/null || true
+                    if ! $TC_BIN filter add dev "$TC_DEV" parent ffff: protocol ipv6 prio $PRIO6 u32 match ip6 src ${CLIENT_IP6}/128 police rate ${DOWNLOAD_KBIT}kbit burst ${DOWNLOAD_BURST} drop flowid :1 2>/dev/null; then
                         log_message "WARNING" "用户 User $username 下载限速(police)设置失败 虚拟IP6 ${CLIENT_IP6}"
                     fi
                 fi

@@ -1,4 +1,10 @@
-# OpenVPN 面板 使用手册
+# OpenVPN 面板 完整文档（full-doc）
+
+> 本文件是面板内置帮助信息（资源集 `openwrt-iptables` 的 `help` 资源）的完整副本，
+> 内容涵盖通用使用手册与 OpenWrt / ImmortalWrt 部署专章，作为项目的完整文档保留。
+> 面板内可随时查看同一份文档（“帮助信息”页）。
+
+---
 
 > 一个自托管的 OpenVPN 管理面板：统一管理**用户**、**用户组**、**OpenVPN 服务器实例**，并通过
 > `iptables`/`ipset` 做访问控制、通过 `tc` 做带宽限速。面板负责“编排”，真正的连接与转发由 OpenVPN 完成。
@@ -18,7 +24,7 @@
 10. 证书与客户端配置
 11. 日志、状态与轮换
 12. 安全建议
-13. 部署（systemd）
+13. 部署（systemd / OpenWrt procd）
 14. 常见问题（FAQ）
 15. 附录
 
@@ -42,9 +48,10 @@
 - **下载**：客户端 → 服务器（面板/服务端视角的“接收”，`tc` 入方向）。
 - 流量统计中的 `↑` 为上传、`↓` 为下载，含义与上面一致。
 
-> 下载（`tc` 入方向）无法直接整形：直接在入方向使用 ingress `police` 按源 IP 限速
-> （依赖内核 `act_police`，普通 Linux 内核普遍自带）；缺失时会记录 WARNING 并跳过下载限速，
-> 上传限速不受影响。若内核确实缺少 `act_police`（如部分 OpenWrt 固件），请改用 `openwrt-*` 资源集。
+> 下载（`tc` 入方向）无法直接整形：优先把流量 `redirect` 到 `ovpnrl<服务器ID>` 设备再用 HTB 整形
+> （依赖内核 `ifb` + `act_mirred`，OpenWrt 上即 `kmod-ifb` + `kmod-sched-act-mirred`）；
+> 若不可用则回退到 ingress `police`（依赖 `act_police`）；两者都缺失时会记录 WARNING 并跳过下载限速，
+> 上传限速不受影响。
 
 ---
 
@@ -871,7 +878,9 @@ push "route 192.168.1.0 255.255.255.0"
 
 ---
 
-## 13. 部署（systemd）
+## 13. 部署（systemd / OpenWrt procd）
+
+### 13.0 普通 Linux（systemd）
 
 将 `openvpn-pannel.service` 放在 `/etc/systemd/system/` 或 `/lib/systemd/system/`：
 
@@ -898,6 +907,291 @@ WantedBy=multi-user.target
 sudo systemctl daemon-reload
 sudo systemctl enable --now openvpn-pannel
 ```
+
+### 13.1 部署（OpenWrt / ImmortalWrt，procd）
+
+本节面向 **新版 OpenWrt / ImmortalWrt**，以“手动放置文件 + procd 启动脚本”的方式运行。
+
+#### 13.1.1 适用环境与依赖
+
+- 系统：**新版 OpenWrt** 或 **ImmortalWrt**。
+- 防火墙：可使用 **fw4 + nftables**（实测兼容）。
+- 需要的命令与内核模块：
+
+  | 命令/模块 | 用途 | 缺失时的行为 |
+  | --- | --- | --- |
+  | `bash` | 资源脚本使用 bash 语法 | 脚本无法运行 |
+  | `ipset` | ACL 聚合放行 | 自动回落到逐条 `iptables` 规则（功能可用、性能较差） |
+  | `tc` | 带宽限速 | 记录日志并自动跳过限速 |
+  | `kmod-ifb` + `kmod-sched-act-mirred` | 下载（入方向）限速（**自编译固件必选**，见 13.1.6） | 回退 `kmod-sched-act-police`；两者都缺失则下载限速跳过并记录 WARNING |
+  | `kmod-sched-act-police` | 下载限速的备用方案（**自编译固件通常没有**） | 若同时无 ifb/act_mirred，则下载限速跳过并记录 WARNING |
+  | `iptables` | 下发 ACL 规则 | 无法放行 |
+  | `flock` | 上下线脚本串行化 | 并发时可能相互覆盖规则 |
+  | `conntrack` | 登出时清空该客户端的连接跟踪 | 记录日志并跳过，已建立连接继续放行到超时 |
+
+  安装依赖：
+
+  ```sh
+  opkg update
+  opkg install bash ipset tc iptables flock conntrack kmod-ifb kmod-sched-act-mirred
+  ```
+
+#### 13.1.2 目录约定
+
+设程序部署在 `/opt/openvpn-pannel`：
+
+```
+/opt/openvpn-pannel/
+├── openvpn-pannel            # Go 二进制
+├── config.json               # 配置文件
+└── workdir/                  # 运行目录（证书 / 日志 / socket，由 working_dir 指定）
+/etc/init.d/openvpn-pannel    # procd 启动脚本
+```
+
+> `working_dir` 指向的目录应放在 **/tmp 或独立可写分区**，不要放进只读 squashfs，也不要放在闪存分区，避免日志写坏闪存。
+
+#### 13.1.3 放置程序并安装启动脚本
+
+把二进制 `openvpn-pannel` 与 `config.json` 放进 `/opt/openvpn-pannel/`，然后把下面的 procd 启动脚本保存为
+`/etc/init.d/openvpn-pannel`：
+
+```sh
+#!/bin/sh /etc/rc.common
+START=99
+USE_PROCD=1
+
+PROG=/opt/openvpn-pannel/openvpn-pannel
+CONF=/opt/openvpn-pannel/config.json
+PIDFILE=/var/run/openvpn-pannel.pid
+
+start_service() {
+  procd_open_instance
+  procd_set_param command "$PROG" -config="$CONF" run
+
+  procd_set_param user root
+  procd_set_param stdout 1
+  procd_set_param stderr 1
+  procd_set_param respawn "${respawn_threshold:-3600}" "${respawn_timeout:-5}" "${respawn_retry:-5}"
+  # 停止时 procd 先发 SIGTERM，等待 term_timeout 秒后才 SIGKILL。
+  # 面板收到信号会逐个优雅关闭 openvpn 实例（每个最多等 8 秒），因此这里要给足时间，
+  # 否则超时被 SIGKILL 会导致 openvpn 子进程残留。
+  procd_set_param term_timeout 60
+  procd_set_param pidfile "$PIDFILE"
+  procd_close_instance
+  echo "openvpn-pannel is started!"
+}
+
+stop_service() {
+  # procd 默认发 SIGTERM；这里主动补发 SIGINT 并等待面板退出，
+  # 兼容只处理 SIGINT 的旧版面板，确保 openvpn 子进程被一并关闭。
+  local pid
+  pid="$(cat "$PIDFILE" 2>/dev/null)"
+  [ -n "$pid" ] || return 0
+  kill -INT "$pid" 2>/dev/null
+  local i=0
+  while [ "$i" -lt 60 ] && kill -0 "$pid" 2>/dev/null; do
+    sleep 1
+    i=$((i + 1))
+  done
+}
+
+reload_service() {
+  stop
+  sleep 2s
+  echo "openvpn-pannel is restarted!"
+  start
+}
+```
+
+若你的实际路径不同，请修改脚本中的 `PROG` / `CONF`。它托管运行的命令是：
+
+```
+/opt/openvpn-pannel/openvpn-pannel -config=/opt/openvpn-pannel/config.json run
+```
+
+脚本已设置 `term_timeout 60` 与 `pidfile`，并在 `stop_service()` 中主动发 `SIGINT` 并等待面板退出，
+确保停止服务时能把所有 openvpn 实例一起关掉。
+
+```sh
+cp openvpn-pannel /etc/init.d/openvpn-pannel   # 保存上面的脚本
+chmod +x /etc/init.d/openvpn-pannel
+/etc/init.d/openvpn-pannel enable
+```
+
+首次部署需初始化数据库：
+
+```sh
+/opt/openvpn-pannel/openvpn-pannel -config=/opt/openvpn-pannel/config.json migratedb
+```
+
+启动服务并打开面板：
+
+```sh
+/etc/init.d/openvpn-pannel start
+```
+
+浏览器访问 `http://<路由器IP>:8081/`（端口以 `config.json` 的 `listen` 为准）。
+
+#### 13.1.4 选择资源集（OpenWrt 版脚本）
+
+进入面板的**资源管理**页，选择并启用适合你的**资源集**即可，**不再需要逐个替换文件**：
+
+| 资源集 | 适用系统 | 防火墙 | 说明 |
+| --- | --- | --- | --- |
+| `linux-iptables`（默认） | 普通 Linux 发行版 | iptables/ipset | 下载限速用 ingress police |
+| `linux-nftables` | 普通 Linux 发行版 | 纯 nftables | 无需 ipset/iptables |
+| `openwrt-iptables` | OpenWrt / ImmortalWrt | iptables/ipset | 下载限速优先 ifb、回退 police |
+| `openwrt-nftables` | OpenWrt / ImmortalWrt | 纯 nftables | 下载限速优先 ifb、回退 police |
+
+在**资源管理**页顶部的「资源集」区域：选择要查看的资源集 → 点「启用该资源集」即可切换。
+切换后**请重启相关服务器进程**（或在面板重启对应服务器 / `/etc/init.d/openvpn-pannel reload`）使其生效。
+
+> - OpenWrt 版资源与通用版的主要差别：直接调用 `/usr/sbin/iptables`（或 `/sbin/tc`）等绝对路径、不依赖 `sudo`、
+>   用 `/sys/class/net/<iface>` 判断接口是否存在、`openvpn_path=/usr/sbin/openvpn`、`shell_path=/bin/bash`，
+>   且 tc 限速与 ACL 操作放入 `flock` 临界区串行化。
+> - 资源编辑/切换默认受 `config.json` 的 `allow_edit_resource` 控制，需设为 `true` 才可修改。
+> - **nftables 版本**：启用 `openwrt-nftables` 后，请把 13.1.7 中 `openvpn` 区域的**转发（Forward）策略设为允许**：
+>   面板会在 fw4 之前（`priority -200`）用自身规则直接 `drop` 未放行的流量；若仍设为拒绝，fw4 会把面板已放行的流量一并拒绝。
+
+#### 13.1.5 关于服务器 IPv6（是否开启）
+
+面板支持为服务器开启 IPv6（“服务器管理”里的**服务器 IPv6 网段**，对应 OpenVPN 的 `server-ipv6`）。
+**是否开启请按业务实际情况决定：**
+
+- **开启 IPv6 的好处**：即便你没有任何 IPv6 业务，也建议开启。否则接口上没有 IPv6 地址，
+  客户端会认为“本机没有 IPv6 网络”，可能导致其正常的 IPv6 出公网流量异常（本机 IPv6 流量
+  不会经由 VPN 转发，行为不符合预期）。
+- **开启 IPv6 的坏处**：极少数**完全禁用了 IPv6 的主机**，由于无法为其接口配置 IPv6 地址，会出现连接失败。
+
+因此推荐默认开启；只有在明确知道客户端主机全部禁用了 IPv6 时，才关闭（把该字段留空）。
+
+#### 13.1.6 下载限速方案实测（自编译 OpenWrt 固件必读）
+
+自编译固件通常**不带 `kmod-sched-act-police`，也不带 `kmod-ifb` / `kmod-sched-act-mirred`**，需要先确认可用方案。
+下面是真实设备（ImmortalWrt SNAPSHOT、内核 6.18.39、x86_64）在 OpenVPN 隧道接口上的实测结论。
+
+面向**下载方向（客户端 → 服务器，即服务器的入方向）**：
+
+| 方案 | 原理 | 需要的内核模块 | 本设备实测 |
+| --- | --- | --- | --- |
+| **ifb + HTB** | ingress 上把匹配的包 `mirred egress redirect` 到 `ifb`，在 ifb 上做 HTB 整形 | `ifb`、`act_mirred`、`sch_ingress`、`sch_htb`、`cls_u32` | ✅ **可用**，8Mbit 限到 ~7.5–8 Mbits/sec |
+| **ifb + TBF** | 同上，整形器换成 TBF | `ifb`、`act_mirred`、`sch_ingress`、`sch_tbf`、`cls_u32` | ✅ **可用**，8Mbit 限到 ~7.7 Mbits/sec |
+| **ifb + CAKE** | 同上，整形器换成 CAKE | `ifb`、`act_mirred`、`sch_ingress`、`sch_cake`、`cls_u32` | ✅ **可用**，8Mbit 限到 ~7.6 Mbits/sec |
+| **ingress + police** | 在 ingress 过滤器的 action 里直接 `police rate ... drop` | `sch_ingress`、`cls_u32`、**`act_police`** | ❌ **不可用**（`RTNETLINK answers: No such file or directory`），自编译固件普遍缺 `act_police.ko` |
+| **iptables/nft 的 `limit`/`hashlimit`** | 用防火墙匹配模块按速率丢包 | 对应 xt/nft match | ⚠️ 只能做粗粒度丢包，**不是整形**，重传、抖动大，**不推荐** |
+| **应用层 / OpenVPN `shaper`** | OpenVPN 自带 `--shaper`（仅出方向、全局） | 无 | ⚠️ 仅能限**上传**且是全局总量，无法按客户端 |
+
+**结论：**
+
+- 本类自编译固件**能用的下载限速方案是「ifb + HTB/TBF/CAKE」这一族**，前提是固件里编进了
+  `kmod-ifb` + `kmod-sched-act-mirred`。若这两个也没有，则**没有任何内核级下载限速方案**，
+  脚本会记录 WARNING 并跳过下载限速（上传限速不受影响）。
+- 面板脚本的默认实现是 **ifb + HTB**；`ratelimit.sh`（达量限速）同样基于 ifb。
+- 上传方向（服务器 → 客户端，服务器的出方向）用常规 egress qdisc（HTB/TBF/CAKE）即可，不需要 ifb。
+
+**检查固件是否带这些模块：**
+
+```sh
+ls /lib/modules/$(uname -r)/ | grep -E 'ifb|act_mirred|act_police|sch_htb|sch_tbf|sch_cake|cls_u32|sch_ingress'
+modprobe ifb && echo "ifb OK"
+modprobe act_mirred && echo "act_mirred OK"
+modprobe act_police && echo "act_police OK"   # 一般会失败
+```
+
+**手动验证 ifb + HTB 是否生效**（把 `DEV` 换成你的 openvpn 隧道接口）：
+
+```sh
+DEV=tunudp1300
+ip link add ifb9 type ifb && ip link set ifb9 up
+tc qdisc add dev $DEV handle ffff: ingress
+tc filter add dev $DEV parent ffff: protocol ip prio 1 \
+    u32 match ip src <客户端隧道IP>/32 action mirred egress redirect dev ifb9
+tc qdisc add dev ifb9 root handle 1: htb default 9999
+tc class add dev ifb9 parent 1: classid 1:2 htb rate 8000kbit ceil 8000kbit
+tc filter add dev ifb9 parent 1: protocol ip prio 1 \
+    u32 match ip src <客户端隧道IP>/32 flowid 1:2
+# 之后在客户端跑: iperf3 -c <服务器隧道IP> ，应降到约 8 Mbits/sec
+```
+
+> **注意（探测顺序）**：在 ingress 上挂规则前，必须**先创建 `ffff:` ingress qdisc**
+> （`tc qdisc add dev $DEV handle ffff: ingress`）。否则 `tc filter add ... parent ffff:`
+> 会返回 `RTNETLINK answers: Invalid argument`，被误判为“限速不可用”。
+
+**清理顺序**（避免 `Resource busy` 残留）：
+
+```sh
+tc filter del dev $DEV parent ffff: protocol ip prio 1
+tc qdisc del dev $DEV ingress
+tc class del dev ifb9 classid 1:2
+tc qdisc del dev ifb9 root
+ip link del ifb9
+```
+
+> **脚本中的实现**：OpenWrt 版资源脚本已按本节结论处理，无需手动操作：
+> - 下载限速的 ifb 设备名统一为 **`ovpnrl<服务器ID>`**（加长并加前缀，避免与系统自带的 `ifb0`/`ifb1` 或其它程序重名）。
+> - `client_online.sh` / `ratelimit.sh` 在探测方案前**先创建主接口的 `ffff:` ingress qdisc**；若探测失败且 ingress 是本次新建的，会把它删除。
+> - `server_start.sh` 启动时会清理上次异常退出遗留的 `ovpnrl<服务器ID>` 设备与主接口 ingress；`server_exit.sh` 停止时会删除主接口 ingress 并删除 `ovpnrl<服务器ID>` 设备。
+
+**两套脚本的下载限速策略（默认行为）**
+
+> **普通 Linux 发行版默认用 `police`，`ifb` 方案仅在 OpenWrt 脚本中启用。**
+
+| | 普通 Linux（`linux-*` 资源集） | OpenWrt（`openwrt-*` 资源集） |
+| --- | --- | --- |
+| **默认方案** | ingress + **police**（纯丢包限速，无探测） | 探测后 **ifb + HTB** 优先，**police** 回退 |
+| **依赖模块** | `sch_ingress`、`cls_u32`、`act_police` | ifb 分支需 `ifb` + `act_mirred` + `sch_htb`；police 分支需 `act_police` |
+| **设备/状态** | 无额外设备，一行 filter 即完成 | 每个服务器多一个 `ovpnrl<服务器ID>` 虚拟设备 + 主接口 ingress |
+
+> 如果你希望**一定**具备下载限速能力：编译固件时选中 `kmod-ifb` 与 `kmod-sched-act-mirred`
+> （以及 `kmod-sched-htb`、`kmod-sched-core`）。若确实无法加入这些模块，请接受“无下载限速”，面板会明确记录 WARNING。
+
+#### 13.1.7 新建防火墙区域
+
+在「网络 → 防火墙 → 区域」中新建区域 **`openvpn`**：
+
+- **入站（Input）**：
+  - 不希望 OpenVPN 客户端访问路由器本机 → 选 **丢弃** 或 **拒绝**；
+  - 希望客户端能访问路由器本机 → 选 **允许**。
+- **转发（Forward）**：选 **拒绝**。
+- **出站（Output）**：选 **拒绝**。
+- **转发区域**：
+  - **fw3+iptables** 系统和 **OpenWrt+iptables** 脚本下，不需要选任何区域转发到此区域，也不需要选择此区域能转发到任何区域。
+  - **fw4+nftables** 系统和 **OpenWrt+iptables** 脚本下，同样不需要。
+  - **fw4+nftables** 系统和 **OpenWrt+nftables** 脚本下，需要选择所有可能访问到的区域。
+
+#### 13.1.8 新建接口
+
+在「网络 → 接口」中新建接口 **`openvpnxxxx`**（名字可自定）：
+
+- **协议**：**不配置协议**（unmanaged）。
+- **设备**：选择 **openvpn 进程刷出来的那个接口**（如 `ovpns0`、`tun0`，即你在面板中设置的 openvpn 接口名称，可用 `ip link` 确认）。
+- 归属防火墙区域：选上面新建的 **`openvpn`**。
+
+点击「应用」后，该 openvpn 接口的地址会“消失”——**这是正常现象**（UCI 接管接口后不再由 netifd 配置地址）。
+此时**重启一次服务器进程**，地址即会恢复：
+
+- 面板里重启对应的服务器，或
+- ```sh
+  /etc/init.d/openvpn-pannel reload
+  ```
+
+> 为什么要建这个接口：OpenWrt/fw4 需要有对应的 UCI 接口记录，才能把 openvpn 的动态接口绑定到 `openvpn` 防火墙区域。
+> 选「不配置协议」表示不让 OpenWrt 管理它的地址，地址仍由 openvpn 进程自行配置。
+
+#### 13.1.9 工作原理：面板规则与 fw4 (nftables) 的匹配顺序
+
+- **fw4 + nftables + OpenWrt+iptables 脚本**：数据包**优先匹配面板脚本下发的 `iptables` 规则**（ACL 放行、限速等），之后才匹配由 fw4 维护的 `nft` 规则。客户端能访问哪些目标、是否限速，由**面板 ACL** 决定；不需要选择 VPN 客户端需要访问到的所有区域。
+- **fw4 + nftables + OpenWrt+nftables 脚本**：数据包匹配系统自带防火墙和面板添加的防火墙规则。客户端能访问哪些目标、是否限速，由**面板 ACL 和 OpenWrt 自带防火墙规则**同时决定；需要选择 VPN 客户端需要访问到的所有区域。
+- **fw3 + iptables + OpenWrt+iptables 脚本**：数据包**优先匹配面板下发的 iptables 规则**，由**面板 ACL** 决定；不需要选择区域。
+
+#### 13.1.10 OpenWrt 常见问题
+
+- **限速不生效**：确认已安装 `tc`，且内核包含 `sch_htb`、`cls_u32`、`sch_ingress`。**下载（入方向）限速**优先依赖 `ifb` + `act_mirred`（`kmod-ifb`、`kmod-sched-act-mirred`），不可用时回退 `act_police`；两者都缺失时脚本记录 WARNING 并跳过下载限速。请在「资源管理」页确认已启用 OpenWrt 版资源集。
+- **ACL 未生效**：iptables 资源集确认已安装 `ipset`（缺失时回落到逐条 `iptables`）；nftables 资源集需安装 `nftables`，并确认服务端启动脚本成功建立了 `openvpn_acl_<服务器ID>` 表。
+- **启用 MFA 后客户端一直无法上网**：确认已在客户端自助页面完成动态验证码验证；nftables 资源集已一并启用 `acl_add.sh`、`acl_del.sh`。
+- **应用接口后地址消失**：正常现象，见 13.1.8，重启服务器进程即可恢复。
+- **改了资源脚本 / config.json**：需重启服务才生效。
+- **停止面板后 openvpn 进程残留**：请使用 `/etc/init.d/openvpn-pannel stop` 正常停止。**不要用 `kill -9`**，否则 openvpn 会残留为孤儿进程；若使用旧版面板，升级到本节的 procd 脚本并重建二进制即可。
 
 ---
 

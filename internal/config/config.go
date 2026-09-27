@@ -34,6 +34,14 @@ type Config struct {
 	// 由 systemd 等托管进程回收；面板（重新）启动时会依据数据库中的进程记录重新接管
 	// 这些仍在运行的实例，从而做到面板重启期间客户端无感知。
 	StopInstancesOnExit *bool `json:"stop_instances_on_exit"`
+	// MaxMemoryEvents 内存事件数量上限（含服务器事件与证书事件）。
+	// 为 0 时事件写入数据库（默认，行为不变）；不为 0 时改为启用「内存模式」：
+	//   - 服务器事件与证书事件只存内存，最多保留该数目条最新事件；
+	//   - 在线会话记录、已下发 ACL 记录、用户达量限速周期等日常运行数据也只存内存，
+	//     使日常运行期间数据库几乎只读（仅显式运维操作才写库），保护嵌入式设备闪存；
+	//   - 强制 stop_instances_on_exit=true（面板退出时停止所有实例），以保证重启后状态干净。
+	// 代价：进程重启后上述内存数据丢失（客户端重连会自然重建），终身总流量亦在内存、重启后不保留。
+	MaxMemoryEvents int `json:"max_memory_events"`
 	// TrustedProxies 为反向代理服务器 IP/CIDR 白名单（如 ["127.0.0.1","10.0.0.0/8"]）。
 	// 只有来自这些地址的请求，其 X-Forwarded-For / X-Real-IP 才会被采信为客户端真实 IP；
 	// 未配置（空）时禁用代理信任，客户端 IP 一律取 TCP 来源地址，防止伪造来源。
@@ -41,7 +49,14 @@ type Config struct {
 }
 
 // ShouldStopInstancesOnExit 返回面板退出前是否应停止所有实例。未配置时默认 true。
+//
+// 启用内存事件/运行时数据（max_memory_events > 0）时强制返回 true：此时在线会话、
+// 已下发 ACL 等数据仅存于内存，面板退出若不停止实例，重启后无法正确接管（会话记录与
+// ACL 记录已丢失，可能导致残留防火墙规则）。强制停止实例可确保重启后状态干净。
 func (c *Config) ShouldStopInstancesOnExit() bool {
+	if c.MaxMemoryEvents > 0 {
+		return true
+	}
 	return c.StopInstancesOnExit == nil || *c.StopInstancesOnExit
 }
 

@@ -39,6 +39,10 @@ type App struct {
 }
 
 func (a *App) Run() {
+	if a.cfg.MaxMemoryEvents > 0 {
+		log.Printf("已启用内存事件/运行时数据（max_memory_events=%d）：日常运行不再写库；"+
+			"并强制 stop_instances_on_exit=true，退出时停止所有实例。", a.cfg.MaxMemoryEvents)
+	}
 	a.RecoverRunningServers()
 	a.AutoStartOpenVPNServer()
 	go a.internalAPIRouter.Run(a.cfg.InternalAPIListen)
@@ -51,7 +55,7 @@ func (a *App) Run() {
 			}
 		}()
 	}
-	go a.StartConnectedClientInfoUpdater(12 * time.Second)
+	go a.StartConnectedClientInfoUpdater(20 * time.Second)
 	go a.StartLogRotationTask(60 * time.Second)
 	go a.StartServerKeepAliveTask(60 * time.Second)
 	a.router.Run(a.cfg.Listen)

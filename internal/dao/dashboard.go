@@ -13,6 +13,9 @@ func (um *DaoManager) CountCertificatesByType(certType uint) (int64, error) {
 
 // CountServerEvents 统计事件总数。
 func (um *DaoManager) CountServerEvents() (int64, error) {
+	if um.useMemoryEvents() {
+		return um.eventMemory.countServerEvents(), nil
+	}
 	var count int64
 	err := um.DB.Model(&models.ServerEvent{}).Count(&count).Error
 	return count, err
@@ -22,6 +25,9 @@ func (um *DaoManager) CountServerEvents() (int64, error) {
 func (um *DaoManager) ListRecentServerEvents(limit int) ([]*models.ServerEvent, error) {
 	if limit <= 0 {
 		limit = 10
+	}
+	if um.useMemoryEvents() {
+		return um.eventMemory.recentServerEvents(limit), nil
 	}
 	var list []*models.ServerEvent
 	err := um.DB.Order("event_time desc, id desc").Limit(limit).Find(&list).Error
@@ -37,6 +43,9 @@ func (um *DaoManager) CountServers() (int64, error) {
 
 // CountConnectedClientInfoRecords 统计当前在线客户端记录数。
 func (um *DaoManager) CountConnectedClientInfoRecords() (int64, error) {
+	if um.useMemoryRuntime() {
+		return um.runtimeMemory.countClients(), nil
+	}
 	var count int64
 	err := um.DB.Model(&models.ConnectedClientInfoRecord{}).Count(&count).Error
 	return count, err

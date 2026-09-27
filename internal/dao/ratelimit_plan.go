@@ -70,7 +70,17 @@ func (um *DaoManager) UpdateRateLimitPlan(plan *models.RateLimitPlan, rules []*m
 
 // DeleteRateLimitPlan 删除方案：解除用户关联并清除周期数据、删除规则与方案。
 func (um *DaoManager) DeleteRateLimitPlan(planID uint) error {
-	return um.DB.Transaction(func(tx *gorm.DB) error {
+	// 先取出关联用户，供内存模式事后清理其周期状态。
+	var affectedUserIDs []uint
+	if um.useMemoryRuntime() {
+		var users []*models.User
+		if e := um.DB.Where("rate_limit_plan_id = ?", planID).Find(&users).Error; e == nil {
+			for _, u := range users {
+				affectedUserIDs = append(affectedUserIDs, u.ID)
+			}
+		}
+	}
+	err := um.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&models.User{}).Where("rate_limit_plan_id = ?", planID).Updates(map[string]interface{}{
 			"rate_limit_plan_id":        0,
 			"rate_limit_cycle_start":    0,
@@ -84,6 +94,13 @@ func (um *DaoManager) DeleteRateLimitPlan(planID uint) error {
 		}
 		return tx.Where("id = ?", planID).Delete(&models.RateLimitPlan{}).Error
 	})
+	// 内存模式：清除这些用户在内存中的周期状态。
+	if err == nil {
+		for _, id := range affectedUserIDs {
+			um.runtimeMemory.deleteCycle(id)
+		}
+	}
+	return err
 }
 
 // ListRateLimitPlans 列出全部达量限速方案。
@@ -154,6 +171,18 @@ func (um *DaoManager) AddUsersToRateLimitPlan(planID uint, usernames []string) (
 		"rate_limit_cycle_upload":   0,
 		"rate_limit_cycle_download": 0,
 	})
+	if result.Error != nil {
+		return result.RowsAffected, result.Error
+	}
+	// 内存模式：同步重置这些用户在内存中的周期状态，避免展示/计算使用陈旧值。
+	if um.useMemoryRuntime() {
+		var users []*models.User
+		if err := um.DB.Where("username in ?", usernames).Find(&users).Error; err == nil {
+			for _, u := range users {
+				um.runtimeMemory.setCycle(u.ID, now, 0, 0)
+			}
+		}
+	}
 	return result.RowsAffected, result.Error
 }
 
@@ -170,6 +199,11 @@ func (um *DaoManager) RemoveUsersFromRateLimitPlan(planID uint, userIDs []uint) 
 			"rate_limit_cycle_upload":   0,
 			"rate_limit_cycle_download": 0,
 		})
+	if um.useMemoryRuntime() {
+		for _, id := range userIDs {
+			um.runtimeMemory.deleteCycle(id)
+		}
+	}
 	return result.RowsAffected, result.Error
 }
 
@@ -219,8 +253,60 @@ func (um *DaoManager) ListUsersWithRateLimitPlan(page, pageSize int, query strin
 	return users, count, nil
 }
 
+// overlayCycle 在内存模式下用内存中的周期状态与终身流量覆盖用户对象，
+// 使管理界面/接口展示的数值与运行期一致。非内存模式为无操作。
+func (um *DaoManager) overlayCycle(user *models.User) {
+	if user == nil || !um.useMemoryRuntime() {
+		return
+	}
+	if c := um.runtimeMemory.cycleOf(user.ID); c != nil {
+		user.RateLimitCycleStart = c.start
+		user.RateLimitCycleUpload = c.upload
+		user.RateLimitCycleDownload = c.download
+	} else {
+		// 内存模式尚无记录：视为未初始化（不展示数据库中的陈旧值）。
+		user.RateLimitCycleStart = 0
+		user.RateLimitCycleUpload = 0
+		user.RateLimitCycleDownload = 0
+	}
+	if l := um.runtimeMemory.lifetimeOf(user.ID); l != nil {
+		user.UploadTraffic = l.upload
+		user.DownloadTraffic = l.download
+	} else {
+		// 内存模式尚无记录：视为 0（不展示数据库中的陈旧值）。
+		user.UploadTraffic = 0
+		user.DownloadTraffic = 0
+	}
+}
+
+// effectiveCycle 返回用户当前周期的 (start, upload, download)。
+// 内存模式下取自内存存储；否则取自数据库中的用户记录。
+// ok=false 表示内存模式下该用户尚无周期记录（此时以传入的 user 字段为初值）。
+func (um *DaoManager) effectiveCycle(user *models.User) (uint64, uint64, uint64, bool) {
+	if um.useMemoryRuntime() {
+		if c := um.runtimeMemory.cycleOf(user.ID); c != nil {
+			return c.start, c.upload, c.download, true
+		}
+		return 0, 0, 0, false
+	}
+	return user.RateLimitCycleStart, user.RateLimitCycleUpload, user.RateLimitCycleDownload, true
+}
+
+// writeCycle 写入用户周期状态。内存模式下写内存，否则写数据库。
+func (um *DaoManager) writeCycle(userID uint, start, upload, download uint64) error {
+	if um.useMemoryRuntime() {
+		um.runtimeMemory.setCycle(userID, start, upload, download)
+		return nil
+	}
+	return um.DB.Model(&models.User{}).Where("id = ?", userID).Updates(map[string]interface{}{
+		"rate_limit_cycle_start":    start,
+		"rate_limit_cycle_upload":   upload,
+		"rate_limit_cycle_download": download,
+	}).Error
+}
+
 // ensureRateLimitCycle 保证用户的达量限速周期起点已初始化；若已跨周期则重置周期流量。
-// 返回 (是否写入了数据库, 错误)。
+// 返回 (是否写入了周期状态, 错误)。
 func (um *DaoManager) ensureRateLimitCycle(user *models.User) (bool, error) {
 	if user.RateLimitPlanID == 0 {
 		return false, nil
@@ -235,32 +321,19 @@ func (um *DaoManager) ensureRateLimitCycle(user *models.User) (bool, error) {
 		return false, nil
 	}
 	now := uint64(time.Now().Unix())
-	if user.RateLimitCycleStart == 0 {
-		user.RateLimitCycleStart = now
-		user.RateLimitCycleUpload = 0
-		user.RateLimitCycleDownload = 0
-		return true, um.DB.Model(&models.User{}).Where("id = ?", user.ID).Updates(map[string]interface{}{
-			"rate_limit_cycle_start":    now,
-			"rate_limit_cycle_upload":   0,
-			"rate_limit_cycle_download": 0,
-		}).Error
+	start, _, _, _ := um.effectiveCycle(user)
+	if start == 0 {
+		return true, um.writeCycle(user.ID, now, 0, 0)
 	}
-	if now < user.RateLimitCycleStart {
+	if now < start {
 		return false, nil
 	}
-	elapsed := now - user.RateLimitCycleStart
+	elapsed := now - start
 	if elapsed < period {
 		return false, nil
 	}
-	newStart := user.RateLimitCycleStart + (elapsed/period)*period
-	user.RateLimitCycleStart = newStart
-	user.RateLimitCycleUpload = 0
-	user.RateLimitCycleDownload = 0
-	return true, um.DB.Model(&models.User{}).Where("id = ?", user.ID).Updates(map[string]interface{}{
-		"rate_limit_cycle_start":    newStart,
-		"rate_limit_cycle_upload":   0,
-		"rate_limit_cycle_download": 0,
-	}).Error
+	newStart := start + (elapsed/period)*period
+	return true, um.writeCycle(user.ID, newStart, 0, 0)
 }
 
 // GetUserCycleTraffic 返回用户当前周期内已用流量（上传、下载字节数），
@@ -276,11 +349,18 @@ func (um *DaoManager) GetUserCycleTraffic(userID uint) (uint64, uint64, error) {
 	if _, err := um.ensureRateLimitCycle(user); err != nil {
 		return 0, 0, err
 	}
-	upload := user.RateLimitCycleUpload
-	download := user.RateLimitCycleDownload
+	var upload, download uint64
+	if um.useMemoryRuntime() {
+		if c := um.runtimeMemory.cycleOf(userID); c != nil {
+			upload, download = c.upload, c.download
+		}
+	} else {
+		upload = user.RateLimitCycleUpload
+		download = user.RateLimitCycleDownload
+	}
 
-	var records []*models.ConnectedClientInfoRecord
-	if err := um.DB.Where("username = ?", user.Username).Find(&records).Error; err != nil {
+	records, err := um.ListConnectedClientInfoRecordByUsername(user.Username)
+	if err != nil {
 		return 0, 0, err
 	}
 	for _, record := range records {
@@ -292,6 +372,17 @@ func (um *DaoManager) GetUserCycleTraffic(userID uint) (uint64, uint64, error) {
 
 // AddUserCycleTraffic 会话结束时把本次会话流量累加到用户周期统计。
 func (um *DaoManager) AddUserCycleTraffic(username string, uploadBytes, downloadBytes uint64) error {
+	if um.useMemoryRuntime() {
+		user, err := um.GetUserByUsername(username)
+		if err != nil {
+			return err
+		}
+		if user.RateLimitPlanID == 0 {
+			return nil
+		}
+		um.runtimeMemory.addCycle(user.ID, uploadBytes, downloadBytes)
+		return nil
+	}
 	result := um.DB.Model(&models.User{}).
 		Where("username = ? and rate_limit_plan_id != 0", username).
 		Updates(map[string]interface{}{
@@ -304,11 +395,7 @@ func (um *DaoManager) AddUserCycleTraffic(username string, uploadBytes, download
 // ResetUserRateLimitCycle 手动将用户的周期重置为当前时间。
 func (um *DaoManager) ResetUserRateLimitCycle(userID uint) error {
 	now := uint64(time.Now().Unix())
-	return um.DB.Model(&models.User{}).Where("id = ?", userID).Updates(map[string]interface{}{
-		"rate_limit_cycle_start":    now,
-		"rate_limit_cycle_upload":   0,
-		"rate_limit_cycle_download": 0,
-	}).Error
+	return um.writeCycle(userID, now, 0, 0)
 }
 
 // ResetExpiredRateLimitCycles 检查所有关联方案的用户的周期，对已到期的进行重置。
@@ -378,14 +465,18 @@ func (um *DaoManager) GetRateLimitResetRemaining(userID uint) (uint64, error) {
 	if err := um.DB.First(&plan, user.RateLimitPlanID).Error; err != nil {
 		return 0, nil
 	}
-	if plan.PeriodSeconds == 0 || user.RateLimitCycleStart == 0 {
+	if plan.PeriodSeconds == 0 {
+		return 0, nil
+	}
+	start, _, _, _ := um.effectiveCycle(user)
+	if start == 0 {
 		return 0, nil
 	}
 	now := uint64(time.Now().Unix())
-	if now < user.RateLimitCycleStart {
+	if now < start {
 		return 0, nil
 	}
-	elapsed := now - user.RateLimitCycleStart
+	elapsed := now - start
 	if elapsed >= plan.PeriodSeconds {
 		return 0, nil
 	}

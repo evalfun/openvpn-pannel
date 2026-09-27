@@ -35,7 +35,7 @@ minor_from_v4() {
     _d=$(printf '%s' "$1" | cut -d. -f4)
     M=$(( (${_c:-0} << 8) | ${_d:-0} ))
     [ "$M" -le 0 ] && M=1
-    [ "$M" -ge 65535 ] && M=65534
+    [ "$M" -ge 32768 ] && M=32767
     [ "$M" -eq 9999 ] && M=9998
     printf '%s' "$M"
 }
@@ -45,7 +45,7 @@ minor_from_v6() {
     case "$_h" in ''|*[!0-9a-fA-F]*) _h=0 ;; esac
     M=$(( 16#${_h:-0} ))
     [ "$M" -le 0 ] && M=1
-    [ "$M" -ge 65535 ] && M=65534
+    [ "$M" -ge 32768 ] && M=32767
     [ "$M" -eq 9999 ] && M=9998
     printf '%s' "$M"
 }
@@ -83,9 +83,9 @@ printf '%b' "$CHANGES" | while read -r client_ip upload_kb download_kb; do
     [ -z "$client_ip" ] && continue
     # 依据地址族选择协议/匹配方式与 classid 推导（与上/下线脚本一致）
     if [ "${client_ip#*:}" != "$client_ip" ]; then
-        PROTO="ipv6"; MATCH="ip6"; PREFIX="/128"; MINOR=$(minor_from_v6 "$client_ip")
+        PROTO="ipv6"; MATCH="ip6"; PREFIX="/128"; MINOR=$(minor_from_v6 "$client_ip"); MINOR_H=$(printf '%x' "$MINOR"); PRIO6=$(( MINOR | 32768 )); PRIO=$PRIO6
     else
-        PROTO="ip"; MATCH="ip"; PREFIX="/32"; MINOR=$(minor_from_v4 "$client_ip")
+        PROTO="ip"; MATCH="ip"; PREFIX="/32"; MINOR=$(minor_from_v4 "$client_ip"); MINOR_H=$(printf '%x' "$MINOR"); PRIO6=$(( MINOR | 32768 )); PRIO=$MINOR
     fi
 
     if [ "$upload_kb" -gt 0 ]; then
@@ -96,16 +96,16 @@ printf '%b' "$CHANGES" | while read -r client_ip upload_kb download_kb; do
         UPLOAD_KBIT=$((upload_kb * 8))
         UPLOAD_BURST=$((UPLOAD_KBIT * 12))
         [ "$UPLOAD_BURST" -lt 3000 ] && UPLOAD_BURST=3000
-        $TC_BIN class add dev "$TC_DEV" parent 1: classid 1:$MINOR htb rate ${UPLOAD_KBIT}kbit ceil ${UPLOAD_KBIT}kbit burst ${UPLOAD_BURST} cburst ${UPLOAD_BURST} quantum 1500 2>/dev/null \
-            || $TC_BIN class change dev "$TC_DEV" classid 1:$MINOR htb rate ${UPLOAD_KBIT}kbit ceil ${UPLOAD_KBIT}kbit burst ${UPLOAD_BURST} cburst ${UPLOAD_BURST} quantum 1500
-        $TC_BIN filter del dev "$TC_DEV" parent 1: protocol $PROTO prio $MINOR u32 2>/dev/null || true
-        $TC_BIN filter add dev "$TC_DEV" parent 1: protocol $PROTO prio $MINOR u32 match $MATCH dst ${client_ip}${PREFIX} flowid 1:$MINOR
-        log_message "INFO" "达量限速更新 用户虚拟IP $client_ip 上传 ${upload_kb}KB/s classid 1:$MINOR"
+        $TC_BIN class add dev "$TC_DEV" parent 1: classid 1:$MINOR_H htb rate ${UPLOAD_KBIT}kbit ceil ${UPLOAD_KBIT}kbit burst ${UPLOAD_BURST} cburst ${UPLOAD_BURST} quantum 1500 2>/dev/null \
+            || $TC_BIN class change dev "$TC_DEV" classid 1:$MINOR_H htb rate ${UPLOAD_KBIT}kbit ceil ${UPLOAD_KBIT}kbit burst ${UPLOAD_BURST} cburst ${UPLOAD_BURST} quantum 1500
+        $TC_BIN filter del dev "$TC_DEV" parent 1: protocol $PROTO prio $PRIO u32 2>/dev/null || true
+        $TC_BIN filter add dev "$TC_DEV" parent 1: protocol $PROTO prio $PRIO u32 match $MATCH dst ${client_ip}${PREFIX} flowid 1:$MINOR_H
+        log_message "INFO" "达量限速更新 用户虚拟IP $client_ip 上传 ${upload_kb}KB/s classid 1:$MINOR_H"
     else
         # 取消上传限速：v4/v6 过滤器都清掉，再删类（同一客户端可能两种协议共用该类）
         $TC_BIN filter del dev "$TC_DEV" parent 1: protocol ip prio $MINOR u32 2>/dev/null || true
-        $TC_BIN filter del dev "$TC_DEV" parent 1: protocol ipv6 prio $MINOR u32 2>/dev/null || true
-        $TC_BIN class del dev "$TC_DEV" classid 1:$MINOR 2>/dev/null || true
+        $TC_BIN filter del dev "$TC_DEV" parent 1: protocol ipv6 prio $PRIO6 u32 2>/dev/null || true
+        $TC_BIN class del dev "$TC_DEV" classid 1:$MINOR_H 2>/dev/null || true
         log_message "INFO" "达量限速更新 用户虚拟IP $client_ip 取消上传限速"
     fi
 
@@ -114,13 +114,13 @@ printf '%b' "$CHANGES" | while read -r client_ip upload_kb download_kb; do
         DOWNLOAD_KBIT=$((download_kb * 8))
         DOWNLOAD_BURST=$((DOWNLOAD_KBIT * 12))
         [ "$DOWNLOAD_BURST" -lt 3000 ] && DOWNLOAD_BURST=3000
-        $TC_BIN filter del dev "$TC_DEV" parent ffff: protocol $PROTO prio $MINOR u32 2>/dev/null || true
-        $TC_BIN filter add dev "$TC_DEV" parent ffff: protocol $PROTO prio $MINOR u32 match $MATCH src ${client_ip}${PREFIX} police rate ${DOWNLOAD_KBIT}kbit burst ${DOWNLOAD_BURST} drop flowid :1
-        log_message "INFO" "达量限速更新 用户虚拟IP $client_ip 下载 ${download_kb}KB/s classid 1:$MINOR"
+        $TC_BIN filter del dev "$TC_DEV" parent ffff: protocol $PROTO prio $PRIO u32 2>/dev/null || true
+        $TC_BIN filter add dev "$TC_DEV" parent ffff: protocol $PROTO prio $PRIO u32 match $MATCH src ${client_ip}${PREFIX} police rate ${DOWNLOAD_KBIT}kbit burst ${DOWNLOAD_BURST} drop flowid :1
+        log_message "INFO" "达量限速更新 用户虚拟IP $client_ip 下载 ${download_kb}KB/s classid 1:$MINOR_H"
     else
         # 取消下载限速：清掉主接口 ingress 上的 police 过滤器
         $TC_BIN filter del dev "$TC_DEV" parent ffff: protocol ip prio $MINOR u32 2>/dev/null || true
-        $TC_BIN filter del dev "$TC_DEV" parent ffff: protocol ipv6 prio $MINOR u32 2>/dev/null || true
+        $TC_BIN filter del dev "$TC_DEV" parent ffff: protocol ipv6 prio $PRIO6 u32 2>/dev/null || true
         log_message "INFO" "达量限速更新 用户虚拟IP $client_ip 取消下载限速"
     fi
 done

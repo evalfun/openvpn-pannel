@@ -7,7 +7,10 @@ import (
 
 // 创建服务器事件
 func (um *DaoManager) CreateEventRaw(event *models.ServerEvent) error {
-	//event.EventTime = uint64(time.Now().Unix())
+	if um.useMemoryEvents() {
+		um.eventMemory.appendServerEvent(event)
+		return nil
+	}
 	return um.DB.Create(event).Error
 }
 func (um *DaoManager) CreateEvent(serverID uint, eventType int, realIPAddr string, eventData string) error {
@@ -18,7 +21,7 @@ func (um *DaoManager) CreateEvent(serverID uint, eventType int, realIPAddr strin
 		EventData:  eventData,
 		ServerID:   serverID,
 	}
-	return um.DB.Create(event).Error
+	return um.CreateEventRaw(event)
 }
 
 type EventListResponse struct {
@@ -32,6 +35,10 @@ func (um *DaoManager) GetEventList(serverID uint, eventTypeList []int, query str
 	}
 	if pageSize <= 0 {
 		pageSize = 20
+	}
+	if um.useMemoryEvents() {
+		events, total := um.eventMemory.listServerEvents(serverID, eventTypeList, query, startTime, endTime, page, pageSize)
+		return &EventListResponse{EventList: events, Total: total}, nil
 	}
 	var eventList []*models.ServerEvent
 	response := &EventListResponse{
@@ -77,5 +84,9 @@ func (um *DaoManager) GetEventList(serverID uint, eventTypeList []int, query str
 
 // 清空日志
 func (um *DaoManager) ClearEvent(serverID uint) error {
+	if um.useMemoryEvents() {
+		um.eventMemory.clearServerEvents(serverID)
+		return nil
+	}
 	return um.DB.Where("server_id = ?", serverID).Delete(&models.ServerEvent{}).Error
 }

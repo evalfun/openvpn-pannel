@@ -48,6 +48,7 @@
 - **占用资源少**：单进程、内存占用低，适合路由器、VPS 等资源受限的环境。
 - **企业级防火墙体验**：用户/用户组级别的允许与拒绝策略、CIDR 粒度 ACL、实时限速与达量限速、
   连接跟踪清理，配合完整的事件审计，管控粒度接近专业防火墙。
+- **内存模式**: 支持开启内存模式，将产生的事件和统计数据写入内存中，日常使用0数据库写入，保护嵌入式设备闪存寿命。
 
 ## 依赖
 
@@ -55,8 +56,9 @@
   由配置项 `shell_path` 指定，默认 `/bin/bash`；请勿改为 `sh`/`dash`，否则认证与 ACL 脚本会失效）。
 - **建议**：`ipset`（聚合 ACL，规则数与在线人数无关，性能更好）、`tc`（带宽限速）、
   `conntrack`（启用 MFA 时登出后立即清理连接跟踪，缺失则自动跳过）。
-- **下载限速（tc 入方向）依赖内核模块**：优先使用 `ifb` + `act_mirred`（推荐，OpenWrt 常见），
-  不可用时回退 `act_police`；两者都缺失时会记录明确 WARNING 并跳过下载限速（上传限速不受影响）。
+- **下载限速（tc 入方向）依赖内核模块**：普通 Linux 资源集直接用 `act_police`（内核普遍自带，
+  运维脚本更简单）；OpenWrt 资源集优先 `ifb` + `act_mirred`（`ovpnrl<服务器ID>` 设备）、
+  不可用时回退 `act_police`。所需模块都缺失时会记录明确 WARNING 并跳过下载限速（上传限速不受影响）。
 - **数据库**：SQLite（默认，需 CGO）或 MySQL。
 - 证书由 Go 标准库生成，**无需 openssl**。
 
@@ -153,7 +155,8 @@ WantedBy=multi-user.target
 > 若希望面板重启/崩溃时不中断已连接的客户端，把配置项 `stop_instances_on_exit` 设为 `false`，
 > 并给上面的 systemd 单元加上 `KillMode=process`（否则服务重启会连带杀掉同 cgroup 内的 OpenVPN 进程）。
 
-需要在 **OpenWrt / ImmortalWrt** 部署时，请查看 [`doc-openwrt/README.md`](doc-openwrt/README.md)。
+需要在 **OpenWrt / ImmortalWrt** 部署时，请查看 [`full-doc.md`](full-doc.md) 的「13.1 部署（OpenWrt / ImmortalWrt，procd）」章节
+（面板内置的 OpenWrt 帮助信息中也包含同样的内容）。
 
 ## 从源码构建
 
@@ -176,4 +179,9 @@ go build -ldflags "-X 'main.buildDate=$(date '+%Y-%m-%d %H:%M:%S')'" ./cmd/openv
 
 ## 文档
 
-部署细节、证书管理、脚本与变量、限速计算示例、常见问题等，请查看面板内的 **帮助信息** 页面。
+- **完整文档**：[`full-doc.md`](full-doc.md) —— 与面板内置“帮助信息”内容一致的完整手册，
+  涵盖核心概念、CLI、配置项、面板功能、权限模型、ACL/防火墙、带宽限速、证书、日志、安全建议、
+  部署（普通 Linux systemd 与 **OpenWrt / ImmortalWrt procd**）与常见问题。
+- 也可随时在面板内查看 **帮助信息** 页面（内容相同，且可在线编辑，见 `allow_edit_resource`）。
+- OpenWrt 专属的依赖、目录约定、procd 启动脚本、下载限速实测与防火墙区域设置，见 `full-doc.md`
+  的「13.1 部署（OpenWrt / ImmortalWrt，procd）」章节。

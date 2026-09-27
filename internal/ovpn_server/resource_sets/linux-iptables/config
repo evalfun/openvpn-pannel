@@ -17,7 +17,7 @@ management {{.WorkingDir}}{{.MiscConfig.ManagementSocket}} unix
 keepalive {{.ServerConfig.Keepalive}}
 tls-auth {{.WorkingDir}}{{.MiscConfig.TAFileName}} 0 # This file is secret
 
-{{range .ServerRoute}}push "route {{.Network}}" {{"\n"}}{{end}}
+{{range .ServerRoute}}push "{{if .IsIPv6}}route-ipv6{{else}}route{{end}} {{.Network}}" {{"\n"}}{{end}}
 
 script-security 3
 auth-user-pass-verify {{.WorkingDir}}{{.MiscConfig.ClientAuthScriptName}} via-env

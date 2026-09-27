@@ -1,5 +1,7 @@
 package models
 
+import "strings"
+
 type Server struct {
 	ID         uint   `gorm:"primarykey" json:"id"`
 	Name       string `gorm:"unique;not null" json:"name"`
@@ -33,6 +35,16 @@ type ServerRoute struct {
 	ID       uint   `gorm:"primarykey" json:"id"`
 	ServerID uint   `gorm:"not null" json:"server_id"`
 	Network  string `gorm:"not null" json:"network"`
+}
+
+// IsIPv6 判断该推送路由是否为 IPv6 网段（含冒号）。
+// 模板据此选择 `route-ipv6` 还是 `route` 指令：
+// IPv4 用 push "route 10.13.2.0 255.255.255.0"，IPv6 用 push "route-ipv6 fc00:1024::/32"。
+func (r *ServerRoute) IsIPv6() bool {
+	if r == nil {
+		return false
+	}
+	return strings.Contains(r.Network, ":")
 }
 
 type ClientConfig struct {

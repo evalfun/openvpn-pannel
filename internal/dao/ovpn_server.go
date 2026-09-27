@@ -3,6 +3,9 @@ package dao
 import (
 	"errors"
 	"fmt"
+
+	"gorm.io/gorm"
+
 	"openvpn-pannel/internal/models"
 )
 
@@ -134,6 +137,10 @@ func (um *DaoManager) DeleteOpenVPNServer(serverID uint) error {
 	if err != nil {
 		tx.Rollback()
 		return fmt.Errorf("删除服务器失败: 提交事务失败: %s", err.Error())
+	}
+	// 启用内存事件时，DB 中没有该服务器的事件，需同步清理内存中的记录。
+	if um.useMemoryEvents() {
+		um.eventMemory.clearServerEvents(serverID)
 	}
 	return nil
 }
@@ -412,22 +419,48 @@ func (um *DaoManager) ListServerByUserPermission(userID uint64) (map[int][]uint,
 
 // 保存用户添加的acl
 func (um *DaoManager) SaveAddedACL(aclList []*models.AddedServerACLRecord) error {
+	if um.useMemoryRuntime() {
+		// 按 (serverID, virtualIPAddr) 分组覆盖写入。
+		grouped := make(map[string][]*models.AddedServerACLRecord)
+		for _, acl := range aclList {
+			key := clientKey(acl.ServerID, acl.VirtualIPAddr)
+			grouped[key] = append(grouped[key], acl)
+		}
+		for _, list := range grouped {
+			um.runtimeMemory.saveACL(list[0].ServerID, list[0].VirtualIPAddr, list)
+		}
+		return nil
+	}
 	return um.DB.Create(aclList).Error
 }
 
 func (um *DaoManager) DeleteAddedACLByIP(ipAddr string, serverID uint) error {
+	if um.useMemoryRuntime() {
+		um.runtimeMemory.deleteACL(serverID, ipAddr)
+		return nil
+	}
 	return um.DB.Where("virtual_ip_addr = ? and server_id = ?", ipAddr, serverID).Delete(&models.AddedServerACLRecord{}).Error
 }
 func (um *DaoManager) DeleteAddedACLByServerID(serverID uint) error {
+	if um.useMemoryRuntime() {
+		um.runtimeMemory.deleteACLByServer(serverID)
+		return nil
+	}
 	return um.DB.Where("server_id = ?", serverID).Delete(&models.AddedServerACLRecord{}).Error
 }
 
 func (um *DaoManager) ListAddedACLByIP(ipAddr string, serverID uint) ([]*models.AddedServerACLRecord, error) {
+	if um.useMemoryRuntime() {
+		return um.runtimeMemory.listACL(serverID, ipAddr), nil
+	}
 	var aclList []*models.AddedServerACLRecord
 	err := um.DB.Where("virtual_ip_addr = ? and server_id = ?", ipAddr, serverID).Find(&aclList).Error
 	return aclList, err
 }
 func (um *DaoManager) ListAddedACLByServerID(serverID uint) ([]*models.AddedServerACLRecord, error) {
+	if um.useMemoryRuntime() {
+		return um.runtimeMemory.listACLByServer(serverID), nil
+	}
 	var aclList []*models.AddedServerACLRecord
 	err := um.DB.Where("server_id = ?", serverID).Find(&aclList).Error
 	return aclList, err
@@ -507,34 +540,57 @@ func (um *DaoManager) GetACLByUser(userID uint, serverID uint) ([]*models.GroupA
 }
 
 func (um *DaoManager) CreateConnectedClientInfoRecord(info *models.ConnectedClientInfoRecord) error {
+	if um.useMemoryRuntime() {
+		um.runtimeMemory.upsertClient(info)
+		return nil
+	}
 	return um.DB.Create(info).Error
 }
 
 func (um *DaoManager) DeleteConnectedClientInfoRecord(virtualIPAddr string, serverID uint) error {
-
+	if um.useMemoryRuntime() {
+		um.runtimeMemory.deleteClient(serverID, virtualIPAddr)
+		return nil
+	}
 	result := um.DB.Where("virtual_ip_addr = ? and server_id = ?", virtualIPAddr, serverID).Delete(&models.ConnectedClientInfoRecord{})
 	return result.Error
 }
 
 func (um *DaoManager) DeleteConnectedClientInfoRecordByServerID(serverID uint) error {
-
+	if um.useMemoryRuntime() {
+		um.runtimeMemory.deleteClientsByServer(serverID)
+		return nil
+	}
 	result := um.DB.Where("server_id = ?", serverID).Delete(&models.ConnectedClientInfoRecord{})
 	return result.Error
 }
 
 func (um *DaoManager) ListConnectedClientInfoRecordByServerID(serverID uint) ([]*models.ConnectedClientInfoRecord, error) {
+	if um.useMemoryRuntime() {
+		return um.runtimeMemory.listClients(serverID), nil
+	}
 	var infoList []*models.ConnectedClientInfoRecord
 	err := um.DB.Where("server_id = ?", serverID).Find(&infoList).Error
 	return infoList, err
 }
 
 func (um *DaoManager) ListConnectedClientInfoRecord() ([]*models.ConnectedClientInfoRecord, error) {
+	if um.useMemoryRuntime() {
+		return um.runtimeMemory.listClients(0), nil
+	}
 	var infoList []*models.ConnectedClientInfoRecord
 	err := um.DB.Find(&infoList).Error
 	return infoList, err
 }
 
 func (um *DaoManager) UpdateConnectedClientInfoRecordTraffic(serverID uint, virtualIPAddr string, byteReceived uint64, byteSent uint64) error {
+	if um.useMemoryRuntime() {
+		um.runtimeMemory.updateClient(serverID, virtualIPAddr, func(rec *models.ConnectedClientInfoRecord) {
+			rec.ByteReceived = byteReceived
+			rec.ByteSent = byteSent
+		})
+		return nil
+	}
 	result := um.DB.Model(&models.ConnectedClientInfoRecord{}).
 		Where("server_id = ? and virtual_ip_addr = ?", serverID, virtualIPAddr).
 		Updates(map[string]interface{}{
@@ -546,6 +602,13 @@ func (um *DaoManager) UpdateConnectedClientInfoRecordTraffic(serverID uint, virt
 
 // GetConnectedClientInfoRecord 按服务器与虚拟 IP 查询在线记录。
 func (um *DaoManager) GetConnectedClientInfoRecord(serverID uint, virtualIPAddr string) (*models.ConnectedClientInfoRecord, error) {
+	if um.useMemoryRuntime() {
+		rec, ok := um.runtimeMemory.getClient(serverID, virtualIPAddr)
+		if !ok {
+			return nil, gorm.ErrRecordNotFound
+		}
+		return rec, nil
+	}
 	var info models.ConnectedClientInfoRecord
 	err := um.DB.Where("server_id = ? and virtual_ip_addr = ?", serverID, virtualIPAddr).First(&info).Error
 	if err != nil {
@@ -556,6 +619,13 @@ func (um *DaoManager) GetConnectedClientInfoRecord(serverID uint, virtualIPAddr 
 
 // UpdateConnectedClientInfoRecordLimit 记录该会话最近一次实际下发的限速(KB/s)。
 func (um *DaoManager) UpdateConnectedClientInfoRecordLimit(serverID uint, virtualIPAddr string, uploadKB, downloadKB uint64) error {
+	if um.useMemoryRuntime() {
+		um.runtimeMemory.updateClient(serverID, virtualIPAddr, func(rec *models.ConnectedClientInfoRecord) {
+			rec.UploadLimitKB = uploadKB
+			rec.DownloadLimitKB = downloadKB
+		})
+		return nil
+	}
 	result := um.DB.Model(&models.ConnectedClientInfoRecord{}).
 		Where("server_id = ? and virtual_ip_addr = ?", serverID, virtualIPAddr).
 		Updates(map[string]interface{}{
@@ -567,6 +637,9 @@ func (um *DaoManager) UpdateConnectedClientInfoRecordLimit(serverID uint, virtua
 
 // ListConnectedClientInfoRecordByUsername 列出某用户当前所有在线会话。
 func (um *DaoManager) ListConnectedClientInfoRecordByUsername(username string) ([]*models.ConnectedClientInfoRecord, error) {
+	if um.useMemoryRuntime() {
+		return um.runtimeMemory.listClientsByUsername(username), nil
+	}
 	var infoList []*models.ConnectedClientInfoRecord
 	err := um.DB.Where("username = ?", username).Find(&infoList).Error
 	return infoList, err
@@ -575,6 +648,9 @@ func (um *DaoManager) ListConnectedClientInfoRecordByUsername(username string) (
 // ListConnectedClientInfoRecordByVirtualIP 按虚拟 IP（IPv4 或 IPv6）列出所有在线会话
 // （可能属于不同服务器）。供客户端自助页面依据 HTTP 来源 IP 识别客户端使用。
 func (um *DaoManager) ListConnectedClientInfoRecordByVirtualIP(virtualIPAddr string) ([]*models.ConnectedClientInfoRecord, error) {
+	if um.useMemoryRuntime() {
+		return um.runtimeMemory.listClientsByVirtualIP(virtualIPAddr), nil
+	}
 	var infoList []*models.ConnectedClientInfoRecord
 	err := um.DB.Where("virtual_ip_addr = ? or virtual_ip6_addr = ?", virtualIPAddr, virtualIPAddr).Find(&infoList).Error
 	return infoList, err
@@ -582,6 +658,12 @@ func (um *DaoManager) ListConnectedClientInfoRecordByVirtualIP(virtualIPAddr str
 
 // UpdateConnectedClientInfoRecordMFAVerified 更新某会话的多因素认证验证状态。
 func (um *DaoManager) UpdateConnectedClientInfoRecordMFAVerified(serverID uint, virtualIPAddr string, verified bool) error {
+	if um.useMemoryRuntime() {
+		um.runtimeMemory.updateClient(serverID, virtualIPAddr, func(rec *models.ConnectedClientInfoRecord) {
+			rec.MFAVerified = verified
+		})
+		return nil
+	}
 	result := um.DB.Model(&models.ConnectedClientInfoRecord{}).
 		Where("server_id = ? and virtual_ip_addr = ?", serverID, virtualIPAddr).
 		Update("mfa_verified", verified)

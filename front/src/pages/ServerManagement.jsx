@@ -229,6 +229,8 @@ const ServerManagement = () => {
   const [permissionSuccess, setPermissionSuccess] = useState('');
   // 服务器编辑对话框专用错误
   const [serverFormError, setServerFormError] = useState('');
+  // 服务器推送路由的新增输入（IPv4/IPv6 通用）
+  const [newServerRoute, setNewServerRoute] = useState('');
 
   // 证书选择 / DH 生成 / 客户端导出 相关状态
   const [certSelect, setCertSelect] = useState({
@@ -337,6 +339,7 @@ const ServerManagement = () => {
   const handleAddServer = () => {
     setEditingId(null);
     setServerFormError('');
+    setNewServerRoute('');
     setFormData({
       name: '',
       local: '',
@@ -376,6 +379,7 @@ const ServerManagement = () => {
           if (ref) ensureCertRefInfo(ref.id);
         });
         setServerFormError('');
+        setNewServerRoute('');
         setOpenDialog(true);
       }
     } catch (err) {
@@ -446,6 +450,57 @@ const ServerManagement = () => {
       ...prev,
       [field]: value,
     }));
+  };
+
+  // ===== 服务器推送路由（server_route）=====
+  // 存储格式与配置文件一致：IPv4 为「网络地址 掩码」，IPv6 为「网络地址/前缀」。
+  // 最终由模板生成：push "route <Network>"（OpenVPN 对 IPv4/IPv6 均接受该形式）。
+
+  // 校验路由条目，返回错误信息（空串表示合法）。
+  const validateServerRoute = (value) => {
+    const v = String(value || '').trim();
+    if (!v) return '请输入路由';
+    if (v.includes('"') || v.includes('\n')) return '不能包含引号或换行';
+    // IPv4：A.B.C.D M.M.M.M（掩码可为点分十进制）
+    const v4 = /^(\d{1,3}\.){3}\d{1,3}(\s+\d{1,3}(\.\d{1,3}){3})?$/;
+    // IPv6：网络地址/前缀长度
+    const v6 = /^[0-9a-fA-F:]+(\/\d{1,3})?$/;
+    if (v4.test(v)) {
+      const parts = v.split(/\s+/);
+      const octets = parts[0].split('.').map(Number);
+      if (octets.some((o) => o > 255)) return 'IPv4 地址不合法';
+      if (parts[1]) {
+        const mask = parts[1].split('.').map(Number);
+        if (mask.length !== 4 || mask.some((o) => o > 255)) return '子网掩码不合法';
+      }
+      return '';
+    }
+    if (v6.test(v) && v.includes(':')) {
+      return '';
+    }
+    return '格式应为「网络地址 掩码」（如 10.13.2.0 255.255.255.0）或「网络地址/前缀」（如 fc00:1024::/32）';
+  };
+
+  const handleAddServerRoute = () => {
+    const v = String(newServerRoute || '').trim().replace(/\s+/g, ' ');
+    const err = validateServerRoute(v);
+    if (err) {
+      setServerFormError(err);
+      return;
+    }
+    const existing = formData.server_route || [];
+    if (existing.includes(v)) {
+      setServerFormError('该路由已存在');
+      return;
+    }
+    setServerFormError('');
+    handleFormChange('server_route', [...existing, v]);
+    setNewServerRoute('');
+  };
+
+  const handleRemoveServerRoute = (route) => {
+    const existing = formData.server_route || [];
+    handleFormChange('server_route', existing.filter((r) => r !== route));
   };
 
   // 打开证书选择：target 为 ca / cert。选择服务器证书时会同时选中其私钥。
@@ -729,7 +784,7 @@ const ServerManagement = () => {
       const response = await userManageAPI.getUserList(pageNum, pageSize, query);
       if (response.data.result === 'success') {
         // 过滤掉已被分配权限的用户 似乎不会过滤 无所谓了
-        const filteredUsers = (response.data.data || []).filter(u => !usedUserIds.includes(u.ID));
+        const filteredUsers = (response.data.data || []).filter(u => !usedUserIds.includes(u.id));
         setAllUsers(filteredUsers);
         
         // 每次加载第一页时，更新总数
@@ -1324,37 +1379,41 @@ const ServerManagement = () => {
         <DialogTitle>
           {editingId ? '编辑服务器' : '创建新服务器'}
         </DialogTitle>
-        <DialogContent sx={{ paddingTop: 2, maxHeight: '70vh', overflow: 'auto' }}>
-          {serverFormError && <Alert severity="error" sx={{ marginBottom: 2 }} onClose={() => setServerFormError('')}>{serverFormError}</Alert>}
+        <DialogContent sx={{ paddingTop: 1, maxHeight: '75vh', overflow: 'auto' }}>
+          {serverFormError && <Alert severity="error" sx={{ marginBottom: 1, py: 0 }} onClose={() => setServerFormError('')}>{serverFormError}</Alert>}
           <TextField
             fullWidth
+            size="small"
             label="服务器名称"
             value={formData.name}
             onChange={(e) => handleFormChange('name', e.target.value)}
-            margin="normal"
+            margin="dense"
             required
           />
-          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 2 }}>
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1.5 }}>
             <TextField
+              size="small"
               label="监听端口"
               type="number"
               value={formData.port}
               onChange={(e) => handleFormChange('port', parseInt(e.target.value))}
-              margin="normal"
+              margin="dense"
               sx={{ width: '100%', '@media (min-width:926px)': { width: '49%' } }}
             />
 
             <TextField
+              size="small"
               label="网卡名称"
               value={formData.dev}
               onChange={(e) => handleFormChange('dev', e.target.value)}
-              margin="normal"
+              margin="dense"
               sx={{ width: '100%', '@media (min-width:926px)': { width: '49%' } }}
             />
 
-            <FormControl margin="normal" sx={{ width: '100%', '@media (min-width:926px)': { width: '49%' } }}>
+            <FormControl size="small" margin="dense" sx={{ width: '100%', '@media (min-width:926px)': { width: '49%' } }}>
               <InputLabel>协议</InputLabel>
               <Select
+                size="small"
                 value={formData.proto}
                 onChange={(e) => handleFormChange('proto', e.target.value)}
                 label="协议"
@@ -1368,9 +1427,10 @@ const ServerManagement = () => {
               </Select>
             </FormControl>
 
-            <FormControl margin="normal" sx={{ width: '100%', '@media (min-width:926px)': { width: '49%' } }}>
+            <FormControl size="small" margin="dense" sx={{ width: '100%', '@media (min-width:926px)': { width: '49%' } }}>
               <InputLabel>拓扑</InputLabel>
               <Select
+                size="small"
                 value={formData.topology}
                 onChange={(e) => handleFormChange('topology', e.target.value)}
                 label="拓扑"
@@ -1381,19 +1441,21 @@ const ServerManagement = () => {
             </FormControl>
             <TextField
             fullWidth
+            size="small"
             label="服务器网段 (网络地址 掩码)"
             value={formData.server_cidr}
             onChange={(e) => handleFormChange('server_cidr', e.target.value)}
-            margin="normal"
+            margin="dense"
             sx={{  width: '100%', '@media (min-width:926px)': { width: '49%' } }}
           />
 
           <TextField
             fullWidth
+            size="small"
             label="服务器 IPv6 网段 (如 fc00:2048:1024::/64，留空不启用)"
             value={formData.server_cidr6}
             onChange={(e) => handleFormChange('server_cidr6', e.target.value)}
-            margin="normal"
+            margin="dense"
             sx={{ width: '100%', '@media (min-width:926px)': { width: '49%' } }}
           />
           
@@ -1402,6 +1464,7 @@ const ServerManagement = () => {
           <Autocomplete
             multiple
             freeSolo
+            size="small"
             options={DATA_CIPHER_OPTIONS}
             value={
               formData.data_cipher
@@ -1413,45 +1476,99 @@ const ServerManagement = () => {
               <TextField
                 {...params}
                 fullWidth
-                margin="normal"
+                size="small"
+                margin="dense"
                 label="数据加密算法 (data-ciphers)"
                 helperText="按推荐顺序从高到低多选，也可手动输入；提交格式以 : 分隔，例如 AES-256-GCM:AES-128-GCM"
               />
             )}
           />
-          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 2, alignItems: 'center' }}>
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1.5, alignItems: 'center' }}>
             <TextField
               fullWidth
+              size="small"
               label="心跳配置 (间隔 阈值)"
               value={formData.keepalive}
               onChange={(e) => handleFormChange('keepalive', e.target.value)}
-              margin="normal"
+              margin="dense"
               sx={{ width: '100%', '@media (min-width:926px)': { width: '49%' } }}
             />
             <Box sx={{ width: '100%', '@media (min-width:926px)': { width: '48%' }, display: 'flex', alignItems: 'center', flexWrap: 'nowrap' }}>
               <FormControlLabel
                 control={
                   <Checkbox
+                    size="small"
                     checked={formData.auto_start}
                     onChange={(e) => handleFormChange('auto_start', e.target.checked)}
                   />
                 }
                 label="自动启动"
-                sx={{ marginTop: 1, marginRight: 8 }}
+                sx={{ marginTop: 0, marginRight: 4 }}
               />
               <FormControlLabel
                 control={
                   <Checkbox
+                    size="small"
                     checked={formData.duplicate_cn}
                     onChange={(e) => handleFormChange('duplicate_cn', e.target.checked)}
                   />
                 }
                 label="同证书多次登录"
-                sx={{ marginTop: 1 }}
+                sx={{ marginTop: 0 }}
               />
             </Box>
           </Box>
-          <Box sx={{ marginTop: 2 }}>
+
+          {/* 推送路由（server_route）：IPv4 与 IPv6 通用，快速添加/删除 */}
+          <Box sx={{ marginTop: 1.5, border: '1px solid #e0e0e0', borderRadius: 1, p: 1.5 }}>
+            <Stack direction="row" alignItems="center" spacing={1} sx={{ flexWrap: 'wrap', marginBottom: 1 }}>
+              <Typography variant="subtitle2">推送路由</Typography>
+              <Typography variant="caption" color="text.secondary">
+                生成配置：push "route 10.13.2.0 255.255.255.0" / push "route-ipv6 fc00:1024::/32"
+              </Typography>
+            </Stack>
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'flex-start' }}>
+              <TextField
+                size="small"
+                fullWidth
+                placeholder="如 10.13.2.0 255.255.255.0 或 fc00:1024::/32"
+                value={newServerRoute}
+                onChange={(e) => setNewServerRoute(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleAddServerRoute();
+                  }
+                }}
+                helperText="IPv4 填「网络地址 掩码」；IPv6 填「网络地址/前缀」。回车即可添加"
+              />
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={handleAddServerRoute}
+                sx={{ whiteSpace: 'nowrap', minWidth: 72, height: 40 }}
+              >
+                添加
+              </Button>
+            </Stack>
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, marginTop: 1 }}>
+              {(formData.server_route || []).length > 0 ? (
+                (formData.server_route || []).map((route) => (
+                  <Chip
+                    key={route}
+                    label={route}
+                    size="small"
+                    onDelete={() => handleRemoveServerRoute(route)}
+                    sx={{ maxWidth: '100%' }}
+                  />
+                ))
+              ) : (
+                <Typography variant="caption" color="text.secondary">尚未添加推送路由</Typography>
+              )}
+            </Box>
+          </Box>
+
+          <Box sx={{ marginTop: 1.5 }}>
             <Stack direction="row" alignItems="center" spacing={1} sx={{ marginBottom: 1, flexWrap: 'wrap' }}>
               <Typography variant="subtitle2">CA 证书</Typography>
               <Button size="small" variant="outlined" onClick={() => openCertSelect('ca', 1)}>从证书管理选择</Button>
@@ -1462,10 +1579,12 @@ const ServerManagement = () => {
             {certFieldMode.ca === 'manual' ? (
               <TextField
                 fullWidth
+                size="small"
+                margin="dense"
                 value={formData.ca}
                 onChange={(e) => handleFormChange('ca', e.target.value)}
                 multiline
-                rows={6}
+                rows={4}
                 placeholder="-----BEGIN CERTIFICATE-----
 ...
 -----END CERTIFICATE-----"
@@ -1474,7 +1593,7 @@ const ServerManagement = () => {
               <CertSummary value={formData.ca} info={certRefInfo[parseCertRef(formData.ca)?.id]} manual={certManual('ca')} />
             )}
           </Box>
-          <Box sx={{ marginTop: 2 }}>
+          <Box sx={{ marginTop: 1.5 }}>
             <Stack direction="row" alignItems="center" spacing={1} sx={{ marginBottom: 1, flexWrap: 'wrap' }}>
               <Typography variant="subtitle2">服务器证书</Typography>
               <Button size="small" variant="outlined" onClick={() => openCertSelect('cert', 1)}>从证书管理选择</Button>
@@ -1485,10 +1604,12 @@ const ServerManagement = () => {
             {certFieldMode.cert === 'manual' ? (
               <TextField
                 fullWidth
+                size="small"
+                margin="dense"
                 value={formData.cert}
                 onChange={(e) => handleFormChange('cert', e.target.value)}
                 multiline
-                rows={6}
+                rows={4}
                 placeholder="-----BEGIN CERTIFICATE-----
 ...
 -----END CERTIFICATE-----"
@@ -1497,7 +1618,7 @@ const ServerManagement = () => {
               <CertSummary value={formData.cert} info={certRefInfo[parseCertRef(formData.cert)?.id]} manual={certManual('cert')} />
             )}
           </Box>
-          <Box sx={{ marginTop: 2 }}>
+          <Box sx={{ marginTop: 1.5 }}>
             <Stack direction="row" alignItems="center" spacing={1} sx={{ marginBottom: 1, flexWrap: 'wrap' }}>
               <Typography variant="subtitle2">服务器证书私钥</Typography>
               <Button size="small" onClick={() => toggleCertFieldMode('key')}>
@@ -1507,10 +1628,12 @@ const ServerManagement = () => {
             {certFieldMode.key === 'manual' ? (
               <TextField
                 fullWidth
+                size="small"
+                margin="dense"
                 value={formData.key}
                 onChange={(e) => handleFormChange('key', e.target.value)}
                 multiline
-                rows={6}
+                rows={4}
                 placeholder="-----BEGIN PRIVATE KEY-----
 ...
 -----END PRIVATE KEY-----"
@@ -1519,7 +1642,7 @@ const ServerManagement = () => {
               <CertSummary value={formData.key} info={certRefInfo[parseCertRef(formData.key)?.id]} kind="key" />
             )}
           </Box>
-          <Box sx={{ marginTop: 2 }}>
+          <Box sx={{ marginTop: 1.5 }}>
             <Stack direction="row" alignItems="center" spacing={1} sx={{ marginBottom: 1 }}>
               <Typography variant="subtitle2">DH 参数</Typography>
               <Button size="small" variant="outlined" onClick={() => setDhDialog({ open: true, bits: 2048, generating: false })}>
@@ -1528,16 +1651,18 @@ const ServerManagement = () => {
             </Stack>
             <TextField
               fullWidth
+              size="small"
+              margin="dense"
               value={formData.dh}
               onChange={(e) => handleFormChange('dh', e.target.value)}
               multiline
-              rows={6}
+              rows={4}
               placeholder="-----BEGIN DH PARAMETERS-----
 ...
 -----END DH PARAMETERS-----"
             />
           </Box>
-          <Box sx={{ marginTop: 2 }}>
+          <Box sx={{ marginTop: 1.5 }}>
             <Stack direction="row" alignItems="center" spacing={1} sx={{ marginBottom: 1 }}>
               <Typography variant="subtitle2">TLS-Auth 密钥</Typography>
               <Button size="small" variant="outlined" disabled={tlsGenerating} onClick={handleGenerateTLSAuth}>
@@ -1546,20 +1671,23 @@ const ServerManagement = () => {
             </Stack>
             <TextField
               fullWidth
+              size="small"
+              margin="dense"
               value={formData.tls_auth}
               onChange={(e) => handleFormChange('tls_auth', e.target.value)}
               multiline
-              rows={6}
+              rows={4}
             />
           </Box>
           <TextField
             fullWidth
+            size="small"
             label="其他配置"
             value={formData.other_config}
             onChange={(e) => handleFormChange('other_config', e.target.value)}
-            margin="normal"
+            margin="dense"
             multiline
-            rows={5}
+            rows={4}
             helperText='可添加 remote-cert-tls client 限制客户端证书类型（要求客户端证书含 clientAuth 用途）。'
             placeholder='mssfix 1308 # TCP MSS钳制
 push "route 10.0.2.0 255.255.255.0"  # 推送路由
@@ -1568,12 +1696,12 @@ push "dhcp-option DNS [IP 網址]"     # 推送DNS
 push "redirect-gateway def1"         # 推送默认网关'        
           />
         </DialogContent>
-        <DialogActions>
-          <Button onClick={() => {
+        <DialogActions sx={{ py: 1 }}>
+          <Button size="small" onClick={() => {
             setOpenDialog(false);
             setServerFormError('');
           }}>取消</Button>
-          <Button onClick={handleSaveServer} variant="contained" color="primary">
+          <Button onClick={handleSaveServer} variant="contained" color="primary" size="small">
             保存
           </Button>
         </DialogActions>
@@ -1849,20 +1977,20 @@ push "redirect-gateway def1"         # 推送默认网关'
               <TableBody>
                 {allUsers.length > 0 ? (
                   allUsers.map((user) => (
-                    <TableRow key={user.ID} hover>
+                    <TableRow key={user.id} hover>
                       <TableCell  sx={{ padding: 0 }}>
                         <Checkbox
-                          checked={selectedUsers.includes(user.ID)}
+                          checked={selectedUsers.includes(user.id)}
                           onChange={(e) => {
                             if (e.target.checked) {
-                              setSelectedUsers([...selectedUsers, user.ID]);
+                              setSelectedUsers([...selectedUsers, user.id]);
                             } else {
-                              setSelectedUsers(selectedUsers.filter(id => id !== user.ID));
+                              setSelectedUsers(selectedUsers.filter(id => id !== user.id));
                             }
                           }}
                         />
                       </TableCell>
-                      <TableCell sx={{ padding: 1 }}>{user.ID}</TableCell>
+                      <TableCell sx={{ padding: 1 }}>{user.id}</TableCell>
                       <TableCell sx={{ padding: 1 }}>{user.username}</TableCell>
                       <TableCell sx={{ padding: 1 }}>{user.description ? truncateText(user.description, 30) : '无'}</TableCell>
                     </TableRow>
