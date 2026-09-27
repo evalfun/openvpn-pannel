@@ -425,7 +425,7 @@ curl http://10.8.0.1:8088/logout         # 登出并回收 ACL
 - 若未安装 `ipset`：回落到**传统模式**，每条 ACL 生成一条 `iptables` 规则。
 - 建议安装 `ipset` 与内核模块 `ip_set` / `hash_ip` / `hash_net`。
 
-> 默认脚本仅对 **IPv4 ACL** 生效；IPv6 ACL 会被保存，但默认脚本不应用（可按需自行扩展脚本）。
+
 
 ### 7.3 基础防火墙行为（启动脚本）
 
