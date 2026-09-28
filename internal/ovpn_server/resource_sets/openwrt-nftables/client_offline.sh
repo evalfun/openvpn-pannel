@@ -1,6 +1,8 @@
 #!/bin/bash
 
 INTERNAL_API="__INTERNAL_API__"
+# 内部 API 访问令牌（面板启动时随机生成并替换）
+INTERNAL_API_TOKEN="__INTERNAL_API_TOKEN__"
 LOG_FILE="__WORKING_DIR__auth.log"
 SERVER_ID="__SERVER_ID__"
 
@@ -88,7 +90,7 @@ virtual_ip6_addr: $CLIENT_IP6
 bytes_received: $bytes_received
 bytes_send: $bytes_sent"
 
-curl -s -X POST -d "$request_body" http://$INTERNAL_API/user/offline
+curl -s -H "X-Internal-Token: $INTERNAL_API_TOKEN" -X POST -d "$request_body" http://$INTERNAL_API/user/offline
 
 # ===== 清理带宽限速 (tc) =====
 # classid/prio 与上线脚本一致（有 IPv4 用 IPv4，否则用 IPv6）；无论是否设置过限速都尝试清理。
@@ -155,7 +157,7 @@ username: $encoded_username
 real_ip_addr: $REAL_CLIENT_ADDR
 virtual_ip_addr: $CLIENT_IP4
 virtual_ip6_addr: $CLIENT_IP6"
-result=$(curl -s -X POST -d "$request_body" http://$INTERNAL_API/user/acl/del)
+result=$(curl -s -H "X-Internal-Token: $INTERNAL_API_TOKEN" -X POST -d "$request_body" http://$INTERNAL_API/user/acl/del)
 
 log_message "DEBUG" "acl内容 $result"
 

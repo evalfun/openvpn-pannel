@@ -1,6 +1,8 @@
 #!/bin/bash
 
 INTERNAL_API="__INTERNAL_API__"
+# 内部 API 访问令牌（面板启动时随机生成并替换）
+INTERNAL_API_TOKEN="__INTERNAL_API_TOKEN__"
 LOG_FILE="__WORKING_DIR__auth.log"
 SERVER_ID="__SERVER_ID__"
 
@@ -99,7 +101,7 @@ client_cert_name: $common_name
 virtual_ip_addr: $CLIENT_IP4
 virtual_ip6_addr: $CLIENT_IP6"
 
-curl -s -X POST -d "$request_body" http://$INTERNAL_API/user/online &> /dev/null
+curl -s -H "X-Internal-Token: $INTERNAL_API_TOKEN" -X POST -d "$request_body" http://$INTERNAL_API/user/online &> /dev/null
 
 # ===== 带宽限速 (tc) =====
 # 上传 = 服务器 -> 客户端：在 tun 出方向用 HTB 按目的 IP 整形；
@@ -119,7 +121,7 @@ TC_DEV="$SERVER_INTERFACE"
 
 rate_request="server_id: $SERVER_ID
 username: $encoded_username"
-rate_result=$(curl -s -X POST -d "$rate_request" http://$INTERNAL_API/user/ratelimit/get)
+rate_result=$(curl -s -H "X-Internal-Token: $INTERNAL_API_TOKEN" -X POST -d "$rate_request" http://$INTERNAL_API/user/ratelimit/get)
 UPLOAD_KB=$(printf '%s\n' "$rate_result" | sed -n 's/^upload_kb:[[:space:]]*//p' | head -n1)
 DOWNLOAD_KB=$(printf '%s\n' "$rate_result" | sed -n 's/^download_kb:[[:space:]]*//p' | head -n1)
 case "$UPLOAD_KB" in ''|*[!0-9]*) UPLOAD_KB=0 ;; esac
@@ -204,7 +206,7 @@ username: $encoded_username
 real_ip_addr: $REAL_CLIENT_ADDR
 virtual_ip_addr: $CLIENT_IP4
 virtual_ip6_addr: $CLIENT_IP6"
-result=$(curl -s -X POST -d "$request_body" http://$INTERNAL_API/user/acl/get)
+result=$(curl -s -H "X-Internal-Token: $INTERNAL_API_TOKEN" -X POST -d "$request_body" http://$INTERNAL_API/user/acl/get)
 
 log_message "DEBUG" "acl内容 $result"
 

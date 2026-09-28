@@ -62,7 +62,7 @@ func TestResolveCertReferenceWritesFiles(t *testing.T) {
 	}
 
 	workdir := filepath.Join(dir, "workdir") + string(os.PathSeparator)
-	ins := ovpnserver.NewOpenVPNServerInstance(resolved, nil, nil, workdir, "", "")
+	ins := ovpnserver.NewOpenVPNServerInstance(resolved, nil, nil, workdir, "", "", "")
 	if err := ins.WriteConfig(map[string]string{}); err != nil {
 		t.Fatalf("write config: %v", err)
 	}

@@ -33,9 +33,11 @@ type OpenVPNServerInstance struct {
 	clientConfigList  []*models.ClientConfig
 	workingDir        string
 	internalAPIListen string
-	openvpnPath       string
-	pid               int
-	cmd               *exec.Cmd
+	// internalToken 为内部 API 访问令牌（面板启动时随机生成），注入到脚本里供 curl 携带。
+	internalToken string
+	openvpnPath   string
+	pid           int
+	cmd           *exec.Cmd
 	// exited 在进程退出并被 Wait 回收后关闭。Running 据此判定存活，
 	// 避免进程退出后仍处于僵尸态时 signal 0 成功而误判为存活。
 	exited chan struct{}
@@ -50,7 +52,7 @@ func (ins *OpenVPNServerInstance) GetServerModel() *models.Server {
 func NewOpenVPNServerInstance(instanceModel *models.Server,
 	routeList []*models.ServerRoute,
 	clientConfigList []*models.ClientConfig,
-	workingDir string, internalAPIListen string, openvpnPath string) *OpenVPNServerInstance {
+	workingDir string, internalAPIListen string, internalAPIToken string, openvpnPath string) *OpenVPNServerInstance {
 
 	var _workingDir string
 	if len(workingDir) >= 1 {
@@ -69,9 +71,47 @@ func NewOpenVPNServerInstance(instanceModel *models.Server,
 		clientConfigList:  clientConfigList,
 		workingDir:        _workingDir,
 		internalAPIListen: internalAPIListen,
+		internalToken:     internalAPIToken,
 		openvpnPath:       openvpnPath,
 	}
 	return &instance
+}
+
+// InjectInternalAPIAccess 把内部 API 地址与访问令牌注入脚本：
+//   - 把 __INTERNAL_API__ 替换为内部 API 监听地址；
+//   - 把 __INTERNAL_API_TOKEN__ 替换为面板启动时生成的随机令牌（脚本内 curl 请求头使用）；
+//   - 若脚本不含令牌占位符（例如升级前已种子化到数据库的旧脚本），则在脚本中注入一个
+//     curl 包装函数，为脚本内所有 curl 调用附加 X-Internal-Token 请求头，
+//     保证旧资源在启用令牌校验后仍能访问内部 API。
+//
+// listen 或 token 为空时按原样返回，保持向后兼容。
+func InjectInternalAPIAccess(script, listen, token string) string {
+	if listen != "" {
+		script = strings.ReplaceAll(script, "__INTERNAL_API__", listen)
+	}
+	if token == "" {
+		return script
+	}
+	if strings.Contains(script, "__INTERNAL_API_TOKEN__") {
+		return strings.ReplaceAll(script, "__INTERNAL_API_TOKEN__", token)
+	}
+	return injectCurlTokenWrapper(script, token)
+}
+
+// injectCurlTokenWrapper 在脚本中定义 curl 函数以附加内部 API 令牌请求头。
+// 为保证脚本仍能被内核按 shebang 直接执行，包装函数插入到 shebang 行之后。
+func injectCurlTokenWrapper(script, token string) string {
+	if !strings.Contains(script, "curl") {
+		return script
+	}
+	wrapper := "# 面板自动注入：为脚本内的 curl 调用附加内部 API 访问令牌\n" +
+		"curl() { command curl -H \"X-Internal-Token: " + token + "\" \"$@\"; }\n"
+	if strings.HasPrefix(script, "#!") {
+		if idx := strings.IndexByte(script, '\n'); idx >= 0 {
+			return script[:idx+1] + wrapper + script[idx+1:]
+		}
+	}
+	return wrapper + script
 }
 
 // 重新写入客户端特定配置 misc
@@ -176,13 +216,42 @@ func (ins *OpenVPNServerInstance) WriteConfig(resourceMap map[string]string) err
 		if !ok {
 			fileContent = GetSetDefaultResource(RESOURCE_SET_LINUX_IPTABLES, resourceID)
 		}
-		fileContent = strings.ReplaceAll(fileContent, "__INTERNAL_API__", ins.internalAPIListen)
+		fileContent = InjectInternalAPIAccess(fileContent, ins.internalAPIListen, ins.internalToken)
 		fileContent = strings.ReplaceAll(fileContent, "__WORKING_DIR__", ins.workingDir)
 		fileContent = strings.ReplaceAll(fileContent, "__SERVER_ID__", fmt.Sprintf("%d", ins.serverConfig.ID))
 		fileContent = strings.ReplaceAll(fileContent, "__SERVER_INTERFACE__", ins.serverConfig.Dev)
 
 		err = os.WriteFile(ins.workingDir+fileName, []byte(fileContent), 0755)
 		if err != nil {
+			return fmt.Errorf("写入%s文件失败: %s", fileName, err.Error())
+		}
+	}
+	return nil
+}
+
+// RewriteScripts 仅重新写入由 openvpn 直接执行的三个脚本（认证、上线、下线），
+// 用于面板重启后接管运行中实例时刷新脚本内的内部 API 令牌（令牌每次启动随机生成）。
+// 只写脚本文件，不触碰配置文件、证书与 ccd，避免影响正在运行的实例。
+func (ins *OpenVPNServerInstance) RewriteScripts(resourceMap map[string]string) error {
+	miscConfig, err := getMiscConfig(resourceMap)
+	if err != nil {
+		return fmt.Errorf("获取其他配置失败: %s", err.Error())
+	}
+	fileNameMap := map[string]string{
+		RESOURCE_ID_CLIENT_OFFLINE_SCRIPT: miscConfig.ClientOfflineScriptName,
+		RESOURCE_ID_CLIENT_ONLINE_SCRIPT:  miscConfig.ClientOnlineScriptName,
+		RESOURCE_ID_AUTH_SCRIPT:           miscConfig.ClientAuthScriptName,
+	}
+	for resourceID, fileName := range fileNameMap {
+		fileContent, ok := resourceMap[resourceID]
+		if !ok {
+			fileContent = GetSetDefaultResource(RESOURCE_SET_LINUX_IPTABLES, resourceID)
+		}
+		fileContent = InjectInternalAPIAccess(fileContent, ins.internalAPIListen, ins.internalToken)
+		fileContent = strings.ReplaceAll(fileContent, "__WORKING_DIR__", ins.workingDir)
+		fileContent = strings.ReplaceAll(fileContent, "__SERVER_ID__", fmt.Sprintf("%d", ins.serverConfig.ID))
+		fileContent = strings.ReplaceAll(fileContent, "__SERVER_INTERFACE__", ins.serverConfig.Dev)
+		if err := os.WriteFile(ins.workingDir+fileName, []byte(fileContent), 0755); err != nil {
 			return fmt.Errorf("写入%s文件失败: %s", fileName, err.Error())
 		}
 	}
@@ -225,7 +294,7 @@ func (ins *OpenVPNServerInstance) Start(resourceMap map[string]string) error {
 	if !ok {
 		server_start_script = GetSetDefaultResource(RESOURCE_SET_LINUX_IPTABLES, RESOURCE_ID_SERVER_START_SCRIPT)
 	}
-	server_start_script = strings.ReplaceAll(server_start_script, "__INTERNAL_API__", ins.internalAPIListen)
+	server_start_script = InjectInternalAPIAccess(server_start_script, ins.internalAPIListen, ins.internalToken)
 	server_start_script = strings.ReplaceAll(server_start_script, "__WORKING_DIR__", ins.workingDir)
 	server_start_script = strings.ReplaceAll(server_start_script, "__SERVER_ID__", fmt.Sprintf("%d", ins.serverConfig.ID))
 	server_start_script = strings.ReplaceAll(server_start_script, "__SERVER_INTERFACE__", ins.serverConfig.Dev)
@@ -288,7 +357,7 @@ func (ins *OpenVPNServerInstance) Stop(resourceMap map[string]string) error {
 	if !ok {
 		server_exit_script = GetSetDefaultResource(RESOURCE_SET_LINUX_IPTABLES, RESOURCE_ID_SERVER_EXIT_SCRIPT)
 	}
-	server_exit_script = strings.ReplaceAll(server_exit_script, "__INTERNAL_API__", ins.internalAPIListen)
+	server_exit_script = InjectInternalAPIAccess(server_exit_script, ins.internalAPIListen, ins.internalToken)
 	server_exit_script = strings.ReplaceAll(server_exit_script, "__WORKING_DIR__", ins.workingDir)
 	server_exit_script = strings.ReplaceAll(server_exit_script, "__SERVER_ID__", fmt.Sprintf("%d", ins.serverConfig.ID))
 	server_exit_script = strings.ReplaceAll(server_exit_script, "__SERVER_INTERFACE__", ins.serverConfig.Dev)

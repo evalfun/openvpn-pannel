@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
 	"log"
@@ -10,6 +11,28 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+// internalAPITokenHeader 为内部 API 访问令牌所在的请求头名称。
+const internalAPITokenHeader = "X-Internal-Token"
+
+// internalAPITokenMiddleware 校验内部 API 访问令牌。令牌在面板启动时随机生成并注入脚本，
+// 未携带正确令牌的请求一律拒绝，防止本机或网络上的其它进程伪造认证、上下线、ACL 与限速调用。
+func (a *App) internalAPITokenMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if a.internalToken == "" {
+			c.String(403, "result="+"internal api token not configured")
+			c.Abort()
+			return
+		}
+		got := c.GetHeader(internalAPITokenHeader)
+		if subtle.ConstantTimeCompare([]byte(got), []byte(a.internalToken)) != 1 {
+			c.String(403, "result="+"unauthorized")
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
 
 func ParseInternalAPIData(defaultValue map[string]string, c *gin.Context) (map[string]string, error) {
 	// 读取http body
@@ -66,9 +89,23 @@ func (a *App) UserAuthInternalHandler(c *gin.Context) {
 	}
 	username := string(_username)
 	password := string(_password)
+	// 防暴力破解：VPN 认证路径同样限流。仅在密码校验失败后记录冷却，
+	// 避免正常的快速重连（密码正确）被误伤；冷却期内不再进行昂贵的 bcrypt 校验。
+	authCooldownKey := "vpnauth:" + username
+	if a.loginCooldown != nil {
+		if remain := a.loginCooldown.RetryAfter(authCooldownKey); remain > 0 {
+			reason := fmt.Sprintf("尝试过于频繁，请 %d 秒后再试", retryAfterSeconds(remain))
+			c.String(403, "result="+reason)
+			a.daoManager.CreateEvent(uint(serverID), models.SERVER_EVENT_TYPE_CLIENT_AUTH_FAIL, requestData["real_ip_addr"], fmt.Sprintf("认证限流 证书=%s 用户名=%s", requestData["client_cert_name"], username))
+			return
+		}
+	}
 	//log.Println("auth", username, password)
 	userModel, err := a.daoManager.AuthUser(username, password)
 	if err != nil {
+		if a.loginCooldown != nil {
+			a.loginCooldown.RecordFailure(authCooldownKey)
+		}
 		c.String(403, "result="+"用户名或密码错误")
 		a.daoManager.CreateEvent(uint(serverID), models.SERVER_EVENT_TYPE_CLIENT_AUTH_FAIL, requestData["real_ip_addr"], fmt.Sprintf("用户名或密码错误 证书=%s 用户名=%s", requestData["client_cert_name"], username))
 		return
@@ -427,6 +464,8 @@ func (a *App) GetUserRateLimitInternalHandler(c *gin.Context) {
 }
 
 func (a *App) SetupInternalAPIRoutes() {
+	// 所有内部 API 均需携带启动时生成并注入脚本的访问令牌。
+	a.internalAPIRouter.Use(a.internalAPITokenMiddleware())
 	a.internalAPIRouter.POST("/user/auth", a.UserAuthInternalHandler)
 	a.internalAPIRouter.POST("/user/acl/get", a.GetUserACLInternalHandler)
 	a.internalAPIRouter.POST("/user/acl/del", a.DelUserACLInternalHandler)

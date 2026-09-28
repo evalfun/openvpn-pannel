@@ -373,8 +373,8 @@ func (a *App) GetUserInfoHandler(c *gin.Context, user *models.User) {
 		}
 	}
 	c.JSON(200, gin.H{
-		"username":          user.Username,
-		"description":       user.Description,
+		"username":          user_queryed.Username,
+		"description":       user_queryed.Description,
 		"error":             nil,
 		"groups":            groupList,
 		"rate_limit_type":   user_queryed.RateLimitType,

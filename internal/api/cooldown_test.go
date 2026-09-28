@@ -32,6 +32,30 @@ func TestCooldownLimiter(t *testing.T) {
 	}
 }
 
+func TestCooldownFailureOnly(t *testing.T) {
+	l := newCooldownLimiter(2 * time.Second)
+	// 未记录失败时不应处于冷却期（成功不误伤）。
+	if d := l.RetryAfter("vpnauth:u1"); d != 0 {
+		t.Fatalf("初始 RetryAfter = %v, want 0", d)
+	}
+	// 记录一次失败后进入冷却期。
+	l.RecordFailure("vpnauth:u1")
+	if d := l.RetryAfter("vpnauth:u1"); d <= 0 || d > 2*time.Second {
+		t.Fatalf("失败后 RetryAfter = %v, want (0,2s]", d)
+	}
+	// 冷却期过后恢复可尝试。
+	l.mu.Lock()
+	l.last["vpnauth:u1"] = time.Now().Add(-3 * time.Second)
+	l.mu.Unlock()
+	if d := l.RetryAfter("vpnauth:u1"); d != 0 {
+		t.Fatalf("冷却后 RetryAfter = %v, want 0", d)
+	}
+	// 不同 key 互不影响。
+	if d := l.RetryAfter("vpnauth:u2"); d != 0 {
+		t.Fatalf("其它 key RetryAfter = %v, want 0", d)
+	}
+}
+
 func TestRetryAfterSeconds(t *testing.T) {
 	cases := []struct {
 		in   time.Duration

@@ -42,7 +42,7 @@ func TestKilledProcessIsNotRunning(t *testing.T) {
 		RESOURCE_ID_SERVER_START_SCRIPT: "exit 0",
 		RESOURCE_ID_SERVER_EXIT_SCRIPT:  "exit 0",
 	}
-	ins := NewOpenVPNServerInstance(&models.Server{ID: 1, Name: "keepalive-test"}, nil, nil, dir, "", "/bin/sh")
+	ins := NewOpenVPNServerInstance(&models.Server{ID: 1, Name: "keepalive-test"}, nil, nil, dir, "", "", "/bin/sh")
 	if err := ins.Start(res); err != nil {
 		t.Fatalf("start: %v", err)
 	}

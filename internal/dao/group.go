@@ -33,8 +33,8 @@ func (um *DaoManager) DeleteGroup(groupID uint) error {
 		tx.Rollback()
 		return fmt.Errorf("删除用户组中的用户记录失败 %s", result.Error.Error())
 	}
-	// 删除 ServerPermission 中的记录
-	err := tx.Where("id =? and obj_type = ?", groupID, models.SERVER_PERM_OBJ_TYPE_GROUP).Delete(&models.ServerPermission{}).Error
+	// 删除 ServerPermission 中的记录（按被授权对象 obj_id 匹配，而非权限记录自身主键 id）
+	err := tx.Where("obj_id = ? and obj_type = ?", groupID, models.SERVER_PERM_OBJ_TYPE_GROUP).Delete(&models.ServerPermission{}).Error
 	if err != nil {
 		tx.Rollback()
 		return fmt.Errorf("删除服务器权限记录失败 %s", err.Error())

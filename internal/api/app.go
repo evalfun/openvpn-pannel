@@ -1,6 +1,8 @@
 package api
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"os/exec"
@@ -34,8 +36,22 @@ type App struct {
 	lock              sync.RWMutex
 	internalAPIRouter *gin.Engine
 	buildDate         string
+	// internalToken 为内部 API（供 OpenVPN 脚本回调）的访问令牌，面板启动时随机生成，
+	// 注入到脚本中由 curl 以 X-Internal-Token 请求头携带，防止其它进程伪造调用。
+	internalToken string
 	// loginCooldown 对每个用户的登录密码与 MFA 验证码尝试做最小间隔限制，防暴力破解。
 	loginCooldown *cooldownLimiter
+}
+
+// generateInternalAPIToken 生成内部 API 访问令牌（32 字节随机数的十六进制表示）。
+func generateInternalAPIToken() string {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		// crypto/rand 在正常系统上不会失败；退化为纳秒时间戳，至少保证非空。
+		log.Printf("生成内部 API 令牌失败，回退为时间戳: %v", err)
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(buf)
 }
 
 func (a *App) Run() {
@@ -210,7 +226,12 @@ func (a *App) RecoverRunningServers() {
 	if len(records) == 0 {
 		return
 	}
-	resourceMap := a.PrepareResourceMap([]string{ovpnserver.RESOURCE_ID_MISC_CONFIG})
+	resourceMap := a.PrepareResourceMap([]string{
+		ovpnserver.RESOURCE_ID_MISC_CONFIG,
+		ovpnserver.RESOURCE_ID_CLIENT_OFFLINE_SCRIPT,
+		ovpnserver.RESOURCE_ID_CLIENT_ONLINE_SCRIPT,
+		ovpnserver.RESOURCE_ID_AUTH_SCRIPT,
+	})
 	miscConfig, err := ovpnserver.ParseMiscConfig(resourceMap)
 	if err != nil {
 		log.Printf("接管运行中实例失败: 解析杂项配置失败: %v", err)
@@ -231,8 +252,13 @@ func (a *App) RecoverRunningServers() {
 		serverInstance := ovpnserver.NewOpenVPNServerInstance(
 			a.resolvedServerModel(serverModel), nil, nil,
 			fmt.Sprintf("%s/%d", a.cfg.WorkingDir, serverModel.ID),
-			a.cfg.InternalAPIListen, miscConfig.OpenVPNPath)
+			a.cfg.InternalAPIListen, a.internalToken, miscConfig.OpenVPNPath)
 		serverInstance.AttachPID(record.PID)
+		// 内部 API 令牌每次启动随机生成，接管的实例磁盘上的脚本仍是旧令牌，
+		// 这里重写认证/上下线脚本以刷新令牌，避免重启后新连接认证失败。
+		if err := serverInstance.RewriteScripts(resourceMap); err != nil {
+			log.Printf("接管实例 server %d 刷新内部 API 令牌失败: %v", serverModel.ID, err)
+		}
 		a.lock.Lock()
 		a.ovpnProcessList[serverModel.ID] = serverInstance
 		a.lock.Unlock()
@@ -402,7 +428,7 @@ func (a *App) runRateLimitUpdateScript(serverInstance *ovpnserver.OpenVPNServerI
 	}
 	serverModel := serverInstance.GetServerModel()
 	workingDir := fmt.Sprintf("%s/%d/", strings.TrimRight(a.cfg.WorkingDir, "/"), serverModel.ID)
-	script = strings.ReplaceAll(script, "__INTERNAL_API__", a.cfg.InternalAPIListen)
+	script = ovpnserver.InjectInternalAPIAccess(script, a.cfg.InternalAPIListen, a.internalToken)
 	script = strings.ReplaceAll(script, "__WORKING_DIR__", workingDir)
 	script = strings.ReplaceAll(script, "__SERVER_ID__", fmt.Sprintf("%d", serverModel.ID))
 	script = strings.ReplaceAll(script, "__SERVER_INTERFACE__", serverModel.Dev)
@@ -427,6 +453,7 @@ func NewApp(cfg *config.Config, buildDate string) *App {
 		ovpnProcessList: make(map[uint]*ovpnserver.OpenVPNServerInstance),
 		ovpnProcessLock: make(map[uint]*sync.RWMutex),
 		buildDate:       buildDate,
+		internalToken:   generateInternalAPIToken(),
 		loginCooldown:   newCooldownLimiter(loginCooldownInterval),
 	}
 	var err error

@@ -3,6 +3,8 @@
 # 通过环境变量接收用户名和密码 (script-security 4)
 
 INTERNAL_API="__INTERNAL_API__"
+# 内部 API 访问令牌（面板启动时随机生成并替换）
+INTERNAL_API_TOKEN="__INTERNAL_API_TOKEN__"
 LOG_FILE="__WORKING_DIR__auth.log"
 SERVER_ID="__SERVER_ID__"
 
@@ -43,7 +45,7 @@ password: $encoded_password
 real_ip_addr: $REAL_CLIENT_ADDR
 client_cert_name: $common_name"
 
-resp_body=$(curl -s -X POST -d "$http_body" http://$INTERNAL_API/user/auth -w "\\nstatus=%{http_code}")
+resp_body=$(curl -s -H "X-Internal-Token: $INTERNAL_API_TOKEN" -X POST -d "$http_body" http://$INTERNAL_API/user/auth -w "\\nstatus=%{http_code}")
 status=""
 result=""
 while IFS= read -r line

@@ -39,14 +39,45 @@ func (l *cooldownLimiter) Allow(key string) (bool, time.Duration) {
 		}
 	}
 	l.last[key] = now
-	if len(l.last) > l.maxEntries {
-		for k, t := range l.last {
-			if now.Sub(t) >= l.interval {
-				delete(l.last, k)
-			}
+	l.pruneLocked(now)
+	return true, 0
+}
+
+// RetryAfter 查询 key 当前剩余的冷却时间；不在冷却期返回 0。只读，不记录尝试。
+// 与 Allow 的区别：用于“仅在失败后限流”的场景（如 VPN 认证），成功不会误伤。
+func (l *cooldownLimiter) RetryAfter(key string) time.Duration {
+	now := time.Now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	last, ok := l.last[key]
+	if !ok {
+		return 0
+	}
+	if remain := l.interval - now.Sub(last); remain > 0 {
+		return remain
+	}
+	return 0
+}
+
+// RecordFailure 记录一次失败，使该 key 在 interval 内不再被允许尝试。
+func (l *cooldownLimiter) RecordFailure(key string) {
+	now := time.Now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.last[key] = now
+	l.pruneLocked(now)
+}
+
+// pruneLocked 在条目数超过阈值时清理已过期条目（调用方需持有 l.mu）。
+func (l *cooldownLimiter) pruneLocked(now time.Time) {
+	if len(l.last) <= l.maxEntries {
+		return
+	}
+	for k, t := range l.last {
+		if now.Sub(t) >= l.interval {
+			delete(l.last, k)
 		}
 	}
-	return true, 0
 }
 
 // retryAfterSeconds 把剩余冷却时间向上取整为秒数，至少为 1。

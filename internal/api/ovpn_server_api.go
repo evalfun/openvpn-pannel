@@ -692,7 +692,7 @@ func (a *App) StartOpenVPNServerInstanceHandler(c *gin.Context, user *models.Use
 			a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_START_FAIL, requestIP, "服务器启动失败: 解析杂项配置失败 "+err.Error())
 			return
 		}
-		serverInstance = ovpnserver.NewOpenVPNServerInstance(a.resolvedServerModel(serverModel), serverRouteList, clientConfigList, fmt.Sprintf("%s/%d", a.cfg.WorkingDir, serverModel.ID), a.cfg.InternalAPIListen, miscConfigModel.OpenVPNPath)
+		serverInstance = ovpnserver.NewOpenVPNServerInstance(a.resolvedServerModel(serverModel), serverRouteList, clientConfigList, fmt.Sprintf("%s/%d", a.cfg.WorkingDir, serverModel.ID), a.cfg.InternalAPIListen, a.internalToken, miscConfigModel.OpenVPNPath)
 		a.ovpnProcessList[serverModel.ID] = serverInstance
 
 		err = serverInstance.WriteConfig(resourceMap)
@@ -902,6 +902,7 @@ func (a *App) GetOpenVPNServerLogHandler(c *gin.Context, user *models.User) {
 			"result": "failed",
 			"error":  "获取日志失败: 参数type不能为空",
 		})
+		return
 	}
 	if logType != "server" && logType != "script" {
 		c.JSON(400, gin.H{
@@ -941,7 +942,7 @@ func (a *App) GetOpenVPNServerLogHandler(c *gin.Context, user *models.User) {
 			})
 			return
 		}
-		serverInstance = ovpnserver.NewOpenVPNServerInstance(serverModel, nil, nil, fmt.Sprintf("%s/%d", a.cfg.WorkingDir, serverID), a.cfg.InternalAPIListen, "")
+		serverInstance = ovpnserver.NewOpenVPNServerInstance(serverModel, nil, nil, fmt.Sprintf("%s/%d", a.cfg.WorkingDir, serverID), a.cfg.InternalAPIListen, a.internalToken, "")
 	}
 	// 读取日志文件与日志轮换(copytruncate)互斥，取实例读锁。
 	pl := a.getProcessLock(uint(serverID))
@@ -1000,7 +1001,7 @@ func (a *App) ClearOpenVPNServerLogHandler(c *gin.Context, user *models.User) {
 			})
 			return
 		}
-		serverInstance = ovpnserver.NewOpenVPNServerInstance(serverModel, nil, nil, fmt.Sprintf("%s/%d", a.cfg.WorkingDir, param.ID), a.cfg.InternalAPIListen, "")
+		serverInstance = ovpnserver.NewOpenVPNServerInstance(serverModel, nil, nil, fmt.Sprintf("%s/%d", a.cfg.WorkingDir, param.ID), a.cfg.InternalAPIListen, a.internalToken, "")
 		a.ovpnProcessList[param.ID] = serverInstance
 	}
 	// 清空日志文件与日志轮换(copytruncate)互斥，取实例写锁。
@@ -1189,6 +1190,8 @@ func (a *App) GetOpenVPNServerStatusHandler(c *gin.Context, user *models.User) {
 		})
 		return
 	}
+	// 按连接时间升序排序（最早连接的在前），未知时间排在最后。
+	sortClientListByConnectedSince(response.ClientList)
 	c.JSON(200, gin.H{
 		"result": "success",
 		"error":  nil,
@@ -1337,7 +1340,7 @@ func (a *App) startServerLocked(serverModel *models.Server, source string) {
 		a.daoManager.CreateEvent(serverModel.ID, models.SERVER_EVENT_TYPE_SERVER_START_FAIL, source, "服务器启动失败: 解析杂项配置失败 "+err.Error())
 		return
 	}
-	serverInstance = ovpnserver.NewOpenVPNServerInstance(a.resolvedServerModel(serverModel), serverRouteList, clientConfigList, fmt.Sprintf("%s/%d", a.cfg.WorkingDir, serverModel.ID), a.cfg.InternalAPIListen, miscConfigModel.OpenVPNPath)
+	serverInstance = ovpnserver.NewOpenVPNServerInstance(a.resolvedServerModel(serverModel), serverRouteList, clientConfigList, fmt.Sprintf("%s/%d", a.cfg.WorkingDir, serverModel.ID), a.cfg.InternalAPIListen, a.internalToken, miscConfigModel.OpenVPNPath)
 	a.ovpnProcessList[serverModel.ID] = serverInstance
 
 	err = serverInstance.WriteConfig(resourceMap)
