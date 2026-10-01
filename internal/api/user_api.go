@@ -558,6 +558,14 @@ func (a *App) ResetUserTrafficHandler(c *gin.Context, user *models.User) {
 	})
 }
 
+// normalizeUserIDList 兼容单个(id)与批量(id_list)两种调用，返回用户列表与是否非空。
+func normalizeUserIDList(userID uint, userIDList []uint) ([]uint, bool) {
+	if len(userIDList) == 0 && userID != 0 {
+		userIDList = []uint{userID}
+	}
+	return userIDList, len(userIDList) > 0
+}
+
 // setUsersDisabledHandler 是禁用/启用用户接口的共用实现。
 // 请求体兼容单个(id)与批量(id_list)：{"id": 1} 或 {"id_list": [1,2]}。
 func (a *App) setUsersDisabledHandler(c *gin.Context, disabled bool) {
@@ -573,12 +581,8 @@ func (a *App) setUsersDisabledHandler(c *gin.Context, disabled bool) {
 		})
 		return
 	}
-	// 兼容单个(id)与批量(id_list)两种调用
-	userIDList := param.UserIDList
-	if len(userIDList) == 0 && param.UserID != 0 {
-		userIDList = []uint{param.UserID}
-	}
-	if len(userIDList) == 0 {
+	userIDList, ok := normalizeUserIDList(param.UserID, param.UserIDList)
+	if !ok {
 		c.JSON(400, gin.H{
 			"result": "failed",
 			"error":  "请至少指定一个用户",
@@ -606,4 +610,42 @@ func (a *App) DisableUserHandler(c *gin.Context, user *models.User) {
 // 启用用户接口
 func (a *App) EnableUserHandler(c *gin.Context, user *models.User) {
 	a.setUsersDisabledHandler(c, false)
+}
+
+// SetUsersExpireHandler 批量设置用户有效期。
+// 请求体：{"id_list": [1,2], "expire_at": <unix 秒>}；expire_at=0 表示永久。
+// 到期后用户无法通过认证，在线会话会被状态采集线程自动踢下线。
+func (a *App) SetUsersExpireHandler(c *gin.Context, user *models.User) {
+	type Param struct {
+		UserID     uint   `json:"id"`
+		UserIDList []uint `json:"id_list"`
+		ExpireAt   uint64 `json:"expire_at"`
+	}
+	var param Param
+	if err := c.ShouldBindJSON(&param); err != nil {
+		c.JSON(400, gin.H{
+			"result": "failed",
+			"error":  err.Error(),
+		})
+		return
+	}
+	userIDList, ok := normalizeUserIDList(param.UserID, param.UserIDList)
+	if !ok {
+		c.JSON(400, gin.H{
+			"result": "failed",
+			"error":  "请至少指定一个用户",
+		})
+		return
+	}
+	if err := a.daoManager.SetUsersExpireAt(userIDList, param.ExpireAt); err != nil {
+		c.JSON(500, gin.H{
+			"result": "failed",
+			"error":  err.Error(),
+		})
+		return
+	}
+	c.JSON(200, gin.H{
+		"result": "success",
+		"error":  nil,
+	})
 }

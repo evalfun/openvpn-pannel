@@ -210,6 +210,9 @@ export const userManageAPI = {
   // 启用用户（单个或多个）
   enableUser: (id) => client.post('/user/enable', { id }),
   enableUsers: (idList) => client.post('/user/enable', { id_list: idList }),
+
+  // 批量设置有效期（expireAt 为 unix 秒，0=永久）
+  setUsersExpire: (idList, expireAt) => client.post('/user/set_expire', { id_list: idList, expire_at: expireAt }),
 };
 
 export const permissionAPI = {

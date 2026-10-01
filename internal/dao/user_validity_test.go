@@ -102,3 +102,42 @@ func TestUpdateUserInfoSetsExpireAt(t *testing.T) {
 		t.Fatalf("Description = %q, want desc", got.Description)
 	}
 }
+
+// 批量设置有效期：一次写入多个用户，0 表示永久。
+func TestSetUsersExpireAt(t *testing.T) {
+	dm := newTestDaoManager(t)
+	for _, name := range []string{"u1", "u2", "u3"} {
+		if err := dm.CreateUser(name, "pw", "", models.RATE_LIMIT_TYPE_NONE, 0, 0, 0); err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+	}
+	u1 := mustUser(t, dm, "u1")
+	u2 := mustUser(t, dm, "u2")
+
+	expireAt := uint64(time.Now().Add(48 * time.Hour).Unix())
+	if err := dm.SetUsersExpireAt([]uint{u1.ID, u2.ID}, expireAt); err != nil {
+		t.Fatalf("SetUsersExpireAt: %v", err)
+	}
+	if got := mustUser(t, dm, "u1"); got.ExpireAt != expireAt {
+		t.Fatalf("u1.ExpireAt = %d, want %d", got.ExpireAt, expireAt)
+	}
+	if got := mustUser(t, dm, "u2"); got.ExpireAt != expireAt {
+		t.Fatalf("u2.ExpireAt = %d, want %d", got.ExpireAt, expireAt)
+	}
+	if got := mustUser(t, dm, "u3"); got.ExpireAt != 0 {
+		t.Fatalf("u3.ExpireAt = %d, want 0（未在批量范围内）", got.ExpireAt)
+	}
+
+	// 置 0 表示恢复为永久
+	if err := dm.SetUsersExpireAt([]uint{u1.ID, u2.ID}, 0); err != nil {
+		t.Fatalf("SetUsersExpireAt(0): %v", err)
+	}
+	if got := mustUser(t, dm, "u1"); got.ExpireAt != 0 {
+		t.Fatalf("u1.ExpireAt = %d, want 0", got.ExpireAt)
+	}
+
+	// 空列表为无操作
+	if err := dm.SetUsersExpireAt(nil, 123); err != nil {
+		t.Fatalf("empty list: %v", err)
+	}
+}

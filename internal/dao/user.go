@@ -245,6 +245,17 @@ func (um *DaoManager) SetUsersDisabled(userIDList []uint, disabled bool) error {
 		Update("disabled", disabled).Error
 }
 
+// SetUsersExpireAt 批量设置用户的到期时间（unix 秒，0=永久）。userIDList 为空时不做任何事。
+// 到期后用户无法通过认证，在线会话由状态采集线程在下一轮检查时自动踢下线。
+func (um *DaoManager) SetUsersExpireAt(userIDList []uint, expireAt uint64) error {
+	if len(userIDList) == 0 {
+		return nil
+	}
+	return um.DB.Model(&models.User{}).
+		Where("id in (?)", userIDList).
+		Update("expire_at", expireAt).Error
+}
+
 // SetUserMFA 设置用户的多因素认证类型与数据。mfaType 为 MFA_TYPE_NONE 时清空数据。
 func (um *DaoManager) SetUserMFA(userID uint, mfaType uint, data string) error {
 	if mfaType == models.MFA_TYPE_NONE {

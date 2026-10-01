@@ -93,6 +93,7 @@ func (a *App) setupRoutes() {
 		api.POST("/user/reset_traffic", a.AdminLoginWarper(a.ResetUserTrafficHandler))
 		api.POST("/user/disable", a.AdminLoginWarper(a.DisableUserHandler))
 		api.POST("/user/enable", a.AdminLoginWarper(a.EnableUserHandler))
+		api.POST("/user/set_expire", a.AdminLoginWarper(a.SetUsersExpireHandler))
 
 		// 用户组接口
 		api.POST("/group/create", a.AdminLoginWarper(a.CreateGroupHandler))

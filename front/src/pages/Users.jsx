@@ -151,6 +151,62 @@ const RateLimitFields = ({ value, onChange }) => (  <Stack spacing={2}>
   </Stack>
 );
 
+// 有效期日期时间输入：右侧带日历选择与清空按钮。按钮放在 endAdornment 内以保证水平对齐。
+const ExpireDateTimeField = ({
+  value,
+  onChange,
+  label = '有效期（留空表示永不过期）',
+  helperText = '到期后无法通过认证，在线连接会被自动断开',
+}) => {
+  const inputRef = useRef(null);
+  const openPicker = () => {
+    const el = inputRef.current;
+    if (!el) return;
+    // 现代浏览器可直接唤起原生日期时间选择器；失败则回退到聚焦/点击。
+    if (typeof el.showPicker === 'function') {
+      try {
+        el.showPicker();
+        return;
+      } catch {
+        // 忽略安全限制导致的异常，继续走回退逻辑
+      }
+    }
+    el.focus();
+    el.click();
+  };
+  return (
+    <TextField
+      fullWidth
+      type="datetime-local"
+      label={label}
+      InputLabelProps={{ shrink: true }}
+      inputRef={inputRef}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      helperText={helperText}
+      sx={{ '& input::-webkit-calendar-picker-indicator': { display: 'none' } }}
+      InputProps={{
+        endAdornment: (
+          <InputAdornment position="end">
+            <IconButton size="small" aria-label="打开日历" title="打开日历选择日期时间" onClick={openPicker}>
+              <CalendarMonthIcon fontSize="small" />
+            </IconButton>
+            <IconButton
+              size="small"
+              aria-label="清空有效期"
+              title="清空有效期"
+              onClick={() => onChange('')}
+              disabled={!value}
+            >
+              <ClearIcon fontSize="small" />
+            </IconButton>
+          </InputAdornment>
+        ),
+      }}
+    />
+  );
+};
+
 const Users = () => {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
@@ -205,6 +261,11 @@ const Users = () => {
   const [addGroupCount, setAddGroupCount] = useState(0);
   const [addGroupLoading, setAddGroupLoading] = useState(false);
   const [selectedGroups, setSelectedGroups] = useState([]); // 待添加的用户组名
+  // 批量设置有效期弹窗
+  const [openExpireDialog, setOpenExpireDialog] = useState(false);
+  const [expireForm, setExpireForm] = useState({ expire_at_input: '' });
+  const [expireBusy, setExpireBusy] = useState(false);
+  const [expireError, setExpireError] = useState('');
   
   const [formData, setFormData] = useState({
     username: '',
@@ -225,8 +286,6 @@ const Users = () => {
     download_limit_kb: 0,
     expire_at_input: '',
   });
-  // 编辑弹窗中“有效期”原生日期时间输入框的引用，供日历按钮调用 showPicker()。
-  const expireInputRef = useRef(null);
 
   const loadUsers = async (p = 1, ps = pageSize) => {
     setIsLoading(true);
@@ -496,6 +555,43 @@ const Users = () => {
       setError(err.response?.data?.error || `${actionLabel}失败`);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  // 打开批量设置有效期弹窗
+  const openBulkExpireDialog = () => {
+    if (selectedUserIds.length === 0) {
+      setError('请选择要设置有效期的用户');
+      return;
+    }
+    setExpireForm({ expire_at_input: '' });
+    setExpireError('');
+    setOpenExpireDialog(true);
+  };
+
+  // 批量设置有效期（留空=永久）
+  const handleBatchSetExpire = async () => {
+    try {
+      setExpireBusy(true);
+      setExpireError('');
+      const expireAt = localInputToUnix(expireForm.expire_at_input);
+      const response = await userManageAPI.setUsersExpire(selectedUserIds, expireAt);
+      if (response.data.result === 'success') {
+        setSuccess(
+          expireAt === 0
+            ? `已将 ${selectedUserIds.length} 个用户的有效期设为永久`
+            : `已设置 ${selectedUserIds.length} 个用户的有效期`
+        );
+        setOpenExpireDialog(false);
+        setSelectedUserIds([]);
+        reloadUsers();
+      } else {
+        setExpireError(response.data.error || '设置有效期失败');
+      }
+    } catch (err) {
+      setExpireError(err.response?.data?.error || '设置有效期失败');
+    } finally {
+      setExpireBusy(false);
     }
   };
 
@@ -979,6 +1075,17 @@ const Users = () => {
         {selectedUserIds.length > 0 && (
           <Button
             variant="contained"
+            color="info"
+            startIcon={<CalendarMonthIcon />}
+            onClick={openBulkExpireDialog}
+            disabled={isLoading}
+          >
+            设置有效期 ({selectedUserIds.length})
+          </Button>
+        )}
+        {selectedUserIds.length > 0 && (
+          <Button
+            variant="contained"
             color="error"
             onClick={() => handleSetUsersDisabled(true)}
             disabled={isLoading}
@@ -1301,14 +1408,9 @@ const Users = () => {
               value={formData.description}
               onChange={(e) => setFormData({ ...formData, description: e.target.value })}
             />
-            <TextField
-              fullWidth
-              type="datetime-local"
-              label="有效期（留空表示永不过期）"
-              InputLabelProps={{ shrink: true }}
+            <ExpireDateTimeField
               value={formData.expire_at_input}
-              onChange={(e) => setFormData({ ...formData, expire_at_input: e.target.value })}
-              helperText="到期后无法通过认证，在线连接会被自动断开"
+              onChange={(v) => setFormData({ ...formData, expire_at_input: v })}
             />
             <RateLimitFields value={formData} onChange={setFormData} />
           </Stack>
@@ -1425,6 +1527,31 @@ const Users = () => {
         </DialogActions>
       </Dialog>
 
+      {/* 批量设置有效期 */}
+      <Dialog open={openExpireDialog} onClose={() => setOpenExpireDialog(false)} maxWidth="sm" fullWidth fullScreen={isMobile}>
+        <DialogTitle>批量设置有效期（{selectedUserIds.length} 个用户）</DialogTitle>
+        <DialogContent sx={{ paddingTop: 2 }}>
+          {expireError && (
+            <Alert severity="error" sx={{ marginBottom: 2 }} onClose={() => setExpireError('')}>
+              {expireError}
+            </Alert>
+          )}
+          <Typography variant="body2" color="text.secondary" sx={{ marginBottom: 2 }}>
+            为选中的用户统一设置有效期。留空表示永久；到期后无法通过认证，在线连接会被自动断开。
+          </Typography>
+          <ExpireDateTimeField
+            value={expireForm.expire_at_input}
+            onChange={(v) => setExpireForm({ expire_at_input: v })}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setOpenExpireDialog(false)} disabled={expireBusy}>取消</Button>
+          <Button variant="contained" onClick={handleBatchSetExpire} disabled={expireBusy}>
+            {expireBusy ? <CircularProgress size={24} /> : '确定'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       {/* 编辑用户对话框 */}
       <Dialog  maxWidth={isMobile ? 'lg' : 'md'} open={openEditDialog} onClose={() => { setOpenEditDialog(false); setEditUserError(''); }} fullWidth fullScreen={isMobile}>
         <DialogTitle>更新用户信息 - {editingUser.username}</DialogTitle>
@@ -1450,53 +1577,9 @@ const Users = () => {
               value={editingUser.description}
               onChange={(e) => setEditingUser({ ...editingUser, description: e.target.value })}
             />
-            <TextField
-              fullWidth
-              type="datetime-local"
-              label="有效期（留空表示永不过期）"
-              InputLabelProps={{ shrink: true }}
-              inputRef={expireInputRef}
+            <ExpireDateTimeField
               value={editingUser.expire_at_input}
-              onChange={(e) => setEditingUser({ ...editingUser, expire_at_input: e.target.value })}
-              helperText="到期后无法通过认证，在线连接会被自动断开"
-              sx={{ '& input::-webkit-calendar-picker-indicator': { display: 'none' } }}
-              InputProps={{
-                endAdornment: (
-                  <InputAdornment position="end">
-                    <IconButton
-                      size="small"
-                      aria-label="打开日历"
-                      title="打开日历选择日期时间"
-                      onClick={() => {
-                        const el = expireInputRef.current;
-                        if (!el) return;
-                        // 现代浏览器可直接唤起原生日期时间选择器；失败则回退到聚焦/点击。
-                        if (typeof el.showPicker === 'function') {
-                          try {
-                            el.showPicker();
-                            return;
-                          } catch {
-                            // 忽略安全限制导致的异常，继续走回退逻辑
-                          }
-                        }
-                        el.focus();
-                        el.click();
-                      }}
-                    >
-                      <CalendarMonthIcon fontSize="small" />
-                    </IconButton>
-                    <IconButton
-                      size="small"
-                      aria-label="清空有效期"
-                      title="清空有效期"
-                      onClick={() => setEditingUser({ ...editingUser, expire_at_input: '' })}
-                      disabled={!editingUser.expire_at_input}
-                    >
-                      <ClearIcon fontSize="small" />
-                    </IconButton>
-                  </InputAdornment>
-                ),
-              }}
+              onChange={(v) => setEditingUser({ ...editingUser, expire_at_input: v })}
             />
             <RateLimitFields value={editingUser} onChange={setEditingUser} />
             <Box sx={{ borderTop: '1px solid #eee', paddingTop: 1 }}>
