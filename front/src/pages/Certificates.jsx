@@ -45,6 +45,7 @@ import {
   Settings as ManageIcon,
   Download as DownloadIcon,
   History as HistoryIcon,
+  AccountTree as ChainIcon,
 } from '@mui/icons-material';
 import { useNavigate, useParams } from 'react-router-dom';
 import { certificateAPI } from '../api';
@@ -206,6 +207,11 @@ const Certificates = () => {
   const [importDialog, setImportDialog] = useState({ open: false });
   const [busy, setBusy] = useState(false);
   const [dialogError, setDialogError] = useState('');
+  // 生成 CA 时可选作上级 CA 的证书（需要有私钥）
+  const [caOptions, setCaOptions] = useState([]);
+  const [caOptionsLoading, setCaOptionsLoading] = useState(false);
+  // 信任链查看
+  const [chainDialog, setChainDialog] = useState({ open: false, loading: false, data: null, cert: null, error: '' });
 
   const [keyOptions, setKeyOptions] = useState(initialKeyOptions);
   const [form, setForm] = useState({
@@ -219,6 +225,7 @@ const Certificates = () => {
     email_address: '',
     days: 3650,
     description: '',
+    parent_ca_id: 0,
   });
   const [importForm, setImportForm] = useState({ name: '', cert: '', key: '', description: '' });
 
@@ -259,17 +266,33 @@ const Certificates = () => {
   }, [loadCerts]);
 
   const resetForm = () => {
-    setForm({ name: '', common_name: '', org: '', organizational_unit: '', country: '', province: '', locality: '', email_address: '', days: 3650, description: '' });
+    setForm({ name: '', common_name: '', org: '', organizational_unit: '', country: '', province: '', locality: '', email_address: '', days: 3650, description: '', parent_ca_id: 0 });
     setKeyOptions(initialKeyOptions);
     setDialogError('');
+  };
+
+  // 打开“生成新 CA”弹框并加载可作为上级的 CA（需要有私钥才能签发）。
+  const openGenCADialog = async () => {
+    resetForm();
+    setGenCADialog(true);
+    try {
+      setCaOptionsLoading(true);
+      const res = await certificateAPI.list({ type: CERT_TYPE_CA });
+      setCaOptions((res.data.data || []).filter((c) => c.has_key));
+    } catch (err) {
+      setDialogError('加载可用的上级 CA 失败：' + (err.response?.data?.error || err.message));
+    } finally {
+      setCaOptionsLoading(false);
+    }
   };
 
   const handleGenerateCA = async () => {
     try {
       setBusy(true);
       setDialogError('');
+      const isIntermediate = Number(form.parent_ca_id) > 0;
       await certificateAPI.generateCA({ ...form, ...keyOptions });
-      setSuccess('CA 证书已生成');
+      setSuccess(isIntermediate ? '中间 CA 证书已生成' : 'CA 证书已生成');
       setGenCADialog(false);
       resetForm();
       loadCerts();
@@ -343,6 +366,18 @@ const Certificates = () => {
       setViewDialog({ open: true, data: res.data.data });
     } catch (err) {
       setError('获取证书内容失败：' + (err.response?.data?.error || err.message));
+    }
+  };
+
+  // 查看证书信任链
+  const handleViewChain = async (cert) => {
+    if (!cert) return;
+    setChainDialog({ open: true, loading: true, data: null, cert, error: '' });
+    try {
+      const res = await certificateAPI.getChain(cert.id);
+      setChainDialog({ open: true, loading: false, data: res.data.data, cert, error: '' });
+    } catch (err) {
+      setChainDialog({ open: true, loading: false, data: null, cert, error: '获取信任链失败：' + (err.response?.data?.error || err.message) });
     }
   };
 
@@ -462,7 +497,7 @@ const Certificates = () => {
         <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, justifyContent: 'flex-end' }}>
           {!isLevel2 && (
             <>
-              <Button variant="contained" startIcon={<AddIcon />} onClick={() => { resetForm(); setGenCADialog(true); }}>
+              <Button variant="contained" startIcon={<AddIcon />} onClick={openGenCADialog}>
                 生成新 CA
               </Button>
               <Button variant="outlined" startIcon={<UploadIcon />} onClick={() => { setDialogError(''); setImportDialog({ open: true, certType: CERT_TYPE_CA }); }}>
@@ -695,6 +730,13 @@ const Certificates = () => {
         </DialogContent>
         <DialogActions>
           <Button
+            startIcon={<ChainIcon />}
+            onClick={() => handleViewChain(viewDialog.data)}
+            disabled={!viewDialog.data}
+          >
+            查看信任链
+          </Button>
+          <Button
             startIcon={<DownloadIcon />}
             onClick={() => handleDownload(viewDialog.data, 'cert')}
             disabled={!viewDialog.data}
@@ -709,6 +751,102 @@ const Certificates = () => {
             下载私钥
           </Button>
           <Button onClick={() => setViewDialog({ open: false, data: null })}>关闭</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* 证书信任链 */}
+      <Dialog
+        open={chainDialog.open}
+        onClose={() => setChainDialog({ open: false, loading: false, data: null, cert: null, error: '' })}
+        maxWidth="md"
+        fullWidth
+        fullScreen={isMobile}
+      >
+        <DialogTitle>证书信任链：{chainDialog.cert?.name}</DialogTitle>
+        <DialogContent dividers>
+          {chainDialog.loading ? (
+            <Box sx={{ display: 'flex', justifyContent: 'center', padding: 3 }}>
+              <CircularProgress />
+            </Box>
+          ) : chainDialog.error ? (
+            <Alert severity="error">{chainDialog.error}</Alert>
+          ) : (() => {
+            const data = chainDialog.data;
+            const chain = data?.chain || [];
+            if (chain.length === 0) {
+              return <Typography variant="body2">-</Typography>;
+            }
+            // 展示时把根 CA 放在最上方，叶子证书在最下方。
+            const ordered = [...chain].reverse();
+            return (
+              <Box>
+                {data.complete ? (
+                  <Alert severity="success" sx={{ marginBottom: 2 }}>
+                    信任链完整：已追溯到自签名根 CA。
+                  </Alert>
+                ) : (
+                  <Alert severity="warning" sx={{ marginBottom: 2 }}>
+                    {data.note || '信任链未追溯到自签名根证书。'}
+                  </Alert>
+                )}
+                {ordered.map((node, idx) => (
+                  <Box key={`${node.id}-${idx}`}>
+                    <Paper
+                      variant="outlined"
+                      sx={{
+                        padding: 1.5,
+                        borderColor: node.is_root ? 'success.main' : node.verified ? 'divider' : 'error.main',
+                        borderWidth: node.is_root ? 2 : 1,
+                      }}
+                    >
+                      <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap" sx={{ rowGap: 0.5 }}>
+                        <Chip size="small" label={`第 ${idx + 1} 级`} variant="outlined" />
+                        <Typography variant="subtitle2" sx={{ wordBreak: 'break-all' }}>{node.name}</Typography>
+                        <Chip size="small" color="info" variant="outlined" label={certTypeLabel(node.type)} />
+                        {node.is_root && <Chip size="small" color="success" label="根 CA（自签名）" />}
+                        {!node.is_root && (
+                          node.verified
+                            ? <Chip size="small" color="success" label="签名有效" />
+                            : <Chip size="small" color="error" label="签名未验证" />
+                        )}
+                        {node.has_key && <Chip size="small" label="含私钥" />}
+                      </Stack>
+                      <Typography variant="body2" color="textSecondary" sx={{ marginTop: 0.5 }}>
+                        CN: {node.common_name || '-'}
+                      </Typography>
+                      <Typography variant="body2" color="textSecondary" sx={{ wordBreak: 'break-all' }}>
+                        主题: {node.subject || '-'}
+                      </Typography>
+                      <Typography variant="body2" color="textSecondary" sx={{ wordBreak: 'break-all' }}>
+                        颁发者: {node.issuer || '-'}
+                      </Typography>
+                      <Typography variant="body2" color="textSecondary">
+                        有效期: {formatTime(node.not_before)} ~ {formatTime(node.not_after)}
+                      </Typography>
+                      {node.cert_sha256 && (
+                        <Typography variant="caption" color="textSecondary" sx={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                          SHA-256: {node.cert_sha256}
+                        </Typography>
+                      )}
+                      {node.note && (
+                        <Typography variant="caption" color={node.verified ? 'text.secondary' : 'error.main'} sx={{ display: 'block', marginTop: 0.5 }}>
+                          {node.note}
+                        </Typography>
+                      )}
+                    </Paper>
+                    {idx < ordered.length - 1 && (
+                      <Box sx={{ textAlign: 'center', marginY: 0.5 }}>
+                        <Typography variant="caption" color="textSecondary">↓ 签发</Typography>
+                      </Box>
+                    )}
+                  </Box>
+                ))}
+              </Box>
+            );
+          })()}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setChainDialog({ open: false, loading: false, data: null, cert: null, error: '' })}>关闭</Button>
         </DialogActions>
       </Dialog>
 
@@ -770,6 +908,27 @@ const Certificates = () => {
                   </RadioGroup>
                   <Typography variant="caption" color="textSecondary">
                     服务器证书仅含 serverAuth 用途，客户端证书仅含 clientAuth 用途，未指定则不写入扩展密钥用法。
+                  </Typography>
+                </FormControl>
+              )}
+              {!isSign && (
+                <FormControl margin="normal" fullWidth>
+                  <InputLabel>签名方式</InputLabel>
+                  <Select
+                    value={form.parent_ca_id}
+                    label="签名方式"
+                    onChange={(e) => setForm({ ...form, parent_ca_id: Number(e.target.value) })}
+                    disabled={caOptionsLoading}
+                  >
+                    <MenuItem value={0}>自签名（根 CA）</MenuItem>
+                    {caOptions.map((ca) => (
+                      <MenuItem key={ca.id} value={ca.id}>
+                        由「{ca.name}」签发（中间 CA）
+                      </MenuItem>
+                    ))}
+                  </Select>
+                  <Typography variant="caption" color="textSecondary" sx={{ marginTop: 0.5 }}>
+                    选择上级 CA 将生成由它签名的中间 CA 证书；可在“查看 → 信任链”中查看证书层级。
                   </Typography>
                 </FormControl>
               )}

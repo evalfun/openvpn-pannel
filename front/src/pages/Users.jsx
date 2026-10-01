@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Box,
   Typography,
@@ -23,6 +23,7 @@ import {
   Pagination,
   FormControl,
   InputLabel,
+  InputAdornment,
   Select,
   MenuItem,
   Tooltip,
@@ -31,6 +32,7 @@ import {
   Tab,
   Chip,
   Checkbox,
+  IconButton,
   Switch,
   FormControlLabel,
   useMediaQuery,
@@ -43,6 +45,8 @@ import VisibilityIcon from '@mui/icons-material/Visibility';
 import DeleteForeverIcon from '@mui/icons-material/DeleteForever';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
 import DownloadIcon from '@mui/icons-material/Download';
+import CalendarMonthIcon from '@mui/icons-material/CalendarMonth';
+import ClearIcon from '@mui/icons-material/Clear';
 import { userManageAPI, userServerPermAPI, groupAPI } from '../api';
 
 // 用户限速策略，取值与后端 models.RATE_LIMIT_TYPE_* 一致
@@ -67,6 +71,42 @@ const formatRateLimit = (user) => {
     return `${label} ↑${user.upload_limit_kb || 0} ↓${user.download_limit_kb || 0} KB/s`;
   }
   return label;
+};
+
+// 将 unix 秒转换为 <input type="datetime-local"> 需要的本地时间字符串
+const unixToLocalInput = (ts) => {
+  if (!ts) return '';
+  const d = new Date(Number(ts) * 1000);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
+// 将 datetime-local 的值转换为 unix 秒；空值表示永不过期(0)
+const localInputToUnix = (value) => {
+  if (!value) return 0;
+  const t = new Date(value).getTime();
+  return Number.isNaN(t) ? 0 : Math.floor(t / 1000);
+};
+
+// 将剩余秒数用单一单位展示：x秒 / x分 / x小时 / x天 / x月(每月30天) / x年(一年365天)。
+const formatRemaining = (seconds) => {
+  const sec = Math.max(0, Math.floor(seconds));
+  if (sec < 60) return `${sec}秒`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}分`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)}小时`;
+  const days = Math.floor(sec / 86400);
+  if (days < 30) return `${days}天`;
+  if (days < 365) return `${Math.floor(days / 30)}月`;
+  return `${Math.floor(days / 365)}年`;
+};
+
+// 用户有效期展示：已禁用 / 永久 / 已过期 / 剩余时长。
+const formatUserValidity = (user) => {
+  if (user.disabled) return '已禁用';
+  if (!user.expire_at) return '永久';
+  const remain = user.expire_at - Math.floor(Date.now() / 1000);
+  if (remain <= 0) return '已过期';
+  return formatRemaining(remain);
 };
 
 // 限速单位 KB/s；上传=服务器->客户端，下载=客户端->服务器；0=不限速
@@ -173,6 +213,7 @@ const Users = () => {
     rate_limit_type: 1,
     upload_limit_kb: 0,
     download_limit_kb: 0,
+    expire_at_input: '',
   });
   
   const [editingUser, setEditingUser] = useState({
@@ -182,7 +223,10 @@ const Users = () => {
     rate_limit_type: 1,
     upload_limit_kb: 0,
     download_limit_kb: 0,
+    expire_at_input: '',
   });
+  // 编辑弹窗中“有效期”原生日期时间输入框的引用，供日历按钮调用 showPicker()。
+  const expireInputRef = useRef(null);
 
   const loadUsers = async (p = 1, ps = pageSize) => {
     setIsLoading(true);
@@ -217,10 +261,18 @@ const Users = () => {
     }
     try {
       setIsLoading(true);
-      const response = await userManageAPI.createUser(formData);
+      const response = await userManageAPI.createUser({
+        username: formData.username,
+        password: formData.password,
+        description: formData.description,
+        rate_limit_type: formData.rate_limit_type,
+        upload_limit_kb: formData.upload_limit_kb,
+        download_limit_kb: formData.download_limit_kb,
+        expire_at: localInputToUnix(formData.expire_at_input),
+      });
       if (response.data.result === 'success') {
         setSuccess('用户创建成功');
-        setFormData({ username: '', password: '', description: '', rate_limit_type: 1, upload_limit_kb: 0, download_limit_kb: 0 });
+        setFormData({ username: '', password: '', description: '', rate_limit_type: 1, upload_limit_kb: 0, download_limit_kb: 0, expire_at_input: '' });
         setOpenDialog(false);
         setPage(1);
         reloadUsers();
@@ -319,6 +371,7 @@ const Users = () => {
       rate_limit_type: user.rate_limit_type ?? 1,
       upload_limit_kb: user.upload_limit_kb ?? 0,
       download_limit_kb: user.download_limit_kb ?? 0,
+      expire_at_input: unixToLocalInput(user.expire_at),
       mfa_type: user.mfa_type ?? 0,
       mfa_regenerate: false,
     });
@@ -335,6 +388,7 @@ const Users = () => {
         rate_limit_type: editingUser.rate_limit_type,
         upload_limit_kb: editingUser.upload_limit_kb,
         download_limit_kb: editingUser.download_limit_kb,
+        expire_at: localInputToUnix(editingUser.expire_at_input),
         mfa_type: editingUser.mfa_type ?? 0,
         mfa_regenerate: !!editingUser.mfa_regenerate,
       };
@@ -411,6 +465,35 @@ const Users = () => {
       }
     } catch (err) {
       setError(err.response?.data?.error || '清除流量记录失败');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // 批量禁用/启用用户
+  const handleSetUsersDisabled = async (disabled) => {
+    if (selectedUserIds.length === 0) {
+      setError(`请选择要${disabled ? '禁用' : '启用'}的用户`);
+      return;
+    }
+    const actionLabel = disabled ? '禁用' : '启用';
+    if (!window.confirm(`确定要${actionLabel}选中的 ${selectedUserIds.length} 个用户吗？${disabled ? '禁用后其在线连接会被自动断开。' : ''}`)) {
+      return;
+    }
+    try {
+      setIsLoading(true);
+      const response = disabled
+        ? await userManageAPI.disableUsers(selectedUserIds)
+        : await userManageAPI.enableUsers(selectedUserIds);
+      if (response.data.result === 'success') {
+        setSuccess(`用户已${actionLabel}`);
+        setSelectedUserIds([]);
+        reloadUsers();
+      } else {
+        setError(response.data.error || `${actionLabel}失败`);
+      }
+    } catch (err) {
+      setError(err.response?.data?.error || `${actionLabel}失败`);
     } finally {
       setIsLoading(false);
     }
@@ -893,6 +976,26 @@ const Users = () => {
             清除流量 ({selectedUserIds.length})
           </Button>
         )}
+        {selectedUserIds.length > 0 && (
+          <Button
+            variant="contained"
+            color="error"
+            onClick={() => handleSetUsersDisabled(true)}
+            disabled={isLoading}
+          >
+            禁用 ({selectedUserIds.length})
+          </Button>
+        )}
+        {selectedUserIds.length > 0 && (
+          <Button
+            variant="contained"
+            color="success"
+            onClick={() => handleSetUsersDisabled(false)}
+            disabled={isLoading}
+          >
+            启用 ({selectedUserIds.length})
+          </Button>
+        )}
         <Button
           variant="contained"
           color="success"
@@ -958,6 +1061,10 @@ const Users = () => {
                       <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 1 }}>
                         <Typography variant="body2" color="text.secondary" sx={{ flexShrink: 0 }}>用户ID</Typography>
                         <Typography variant="body2">{user.id}</Typography>
+                      </Box>
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 1 }}>
+                        <Typography variant="body2" color="text.secondary" sx={{ flexShrink: 0 }}>有效期</Typography>
+                        <Typography variant="body2" sx={{ textAlign: 'right' }}>{formatUserValidity(user)}</Typography>
                       </Box>
                       <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 1 }}>
                         <Typography variant="body2" color="text.secondary" sx={{ flexShrink: 0 }}>描述</Typography>
@@ -1028,6 +1135,7 @@ const Users = () => {
                 <TableCell sx={{ fontWeight: 'bold' }}>MFA</TableCell>
                 <TableCell sx={{ fontWeight: 'bold' }}>描述</TableCell>
                 <TableCell sx={{ fontWeight: 'bold' }}>限速</TableCell>
+                <TableCell sx={{ fontWeight: 'bold' }}>有效期</TableCell>
                 <TableCell sx={{ fontWeight: 'bold' }}>流量(历史/当前)</TableCell>
                 <TableCell sx={{ fontWeight: 'bold' }} >
                   操作
@@ -1078,6 +1186,11 @@ const Users = () => {
                       </Typography>
                     </TableCell>
                     <TableCell sx={{paddingTop:0, paddingBottom:0}}>
+                      <Typography variant="body2" sx={{ fontSize: '0.75rem' }}>
+                        {formatUserValidity(user)}
+                      </Typography>
+                    </TableCell>
+                    <TableCell sx={{paddingTop:0, paddingBottom:0}}>
                       <Box>
                         <Typography variant="body2" sx={{ fontSize: '0.75rem' }}>
                           ↑ {formatTraffic(user.upload_traffic || 0)} ({formatTraffic(user.connected_upload_traffic || 0)})
@@ -1124,9 +1237,10 @@ const Users = () => {
 
 
       <Stack direction="row" spacing={2} alignItems="center"  sx={{ marginBottom: 3}}>
-        <FormControl sx={{ minWidth: 120 }}>
+        <FormControl size="small" sx={{ minWidth: 120 }}>
           <InputLabel>每页数量</InputLabel>
           <Select
+            size="small"
             value={pageSize}
             label="每页数量"
             onChange={(e) => {
@@ -1186,6 +1300,15 @@ const Users = () => {
               rows={3}
               value={formData.description}
               onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+            />
+            <TextField
+              fullWidth
+              type="datetime-local"
+              label="有效期（留空表示永不过期）"
+              InputLabelProps={{ shrink: true }}
+              value={formData.expire_at_input}
+              onChange={(e) => setFormData({ ...formData, expire_at_input: e.target.value })}
+              helperText="到期后无法通过认证，在线连接会被自动断开"
             />
             <RateLimitFields value={formData} onChange={setFormData} />
           </Stack>
@@ -1326,6 +1449,54 @@ const Users = () => {
               rows={3}
               value={editingUser.description}
               onChange={(e) => setEditingUser({ ...editingUser, description: e.target.value })}
+            />
+            <TextField
+              fullWidth
+              type="datetime-local"
+              label="有效期（留空表示永不过期）"
+              InputLabelProps={{ shrink: true }}
+              inputRef={expireInputRef}
+              value={editingUser.expire_at_input}
+              onChange={(e) => setEditingUser({ ...editingUser, expire_at_input: e.target.value })}
+              helperText="到期后无法通过认证，在线连接会被自动断开"
+              sx={{ '& input::-webkit-calendar-picker-indicator': { display: 'none' } }}
+              InputProps={{
+                endAdornment: (
+                  <InputAdornment position="end">
+                    <IconButton
+                      size="small"
+                      aria-label="打开日历"
+                      title="打开日历选择日期时间"
+                      onClick={() => {
+                        const el = expireInputRef.current;
+                        if (!el) return;
+                        // 现代浏览器可直接唤起原生日期时间选择器；失败则回退到聚焦/点击。
+                        if (typeof el.showPicker === 'function') {
+                          try {
+                            el.showPicker();
+                            return;
+                          } catch {
+                            // 忽略安全限制导致的异常，继续走回退逻辑
+                          }
+                        }
+                        el.focus();
+                        el.click();
+                      }}
+                    >
+                      <CalendarMonthIcon fontSize="small" />
+                    </IconButton>
+                    <IconButton
+                      size="small"
+                      aria-label="清空有效期"
+                      title="清空有效期"
+                      onClick={() => setEditingUser({ ...editingUser, expire_at_input: '' })}
+                      disabled={!editingUser.expire_at_input}
+                    >
+                      <ClearIcon fontSize="small" />
+                    </IconButton>
+                  </InputAdornment>
+                ),
+              }}
             />
             <RateLimitFields value={editingUser} onChange={setEditingUser} />
             <Box sx={{ borderTop: '1px solid #eee', paddingTop: 1 }}>

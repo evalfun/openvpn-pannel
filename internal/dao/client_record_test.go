@@ -8,7 +8,7 @@ import (
 
 func TestSetUserMFA(t *testing.T) {
 	dm := newTestDaoManager(t)
-	if err := dm.CreateUser("alice", "pw", "", models.RATE_LIMIT_TYPE_ACTIVE_GROUP_MIN, 0, 0); err != nil {
+	if err := dm.CreateUser("alice", "pw", "", models.RATE_LIMIT_TYPE_ACTIVE_GROUP_MIN, 0, 0, 0); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
 	u := mustUser(t, dm, "alice")

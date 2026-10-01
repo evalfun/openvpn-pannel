@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"openvpn-pannel/internal/models"
 	"openvpn-pannel/internal/totp"
@@ -23,6 +24,10 @@ type UserListItem struct {
 	UploadLimitKB            uint64 `json:"upload_limit_kb"`
 	DownloadLimitKB          uint64 `json:"download_limit_kb"`
 	MFAType                  uint   `json:"mfa_type"`
+	// ExpireAt 用户有效期截止时间(unix 秒)，0=永不过期。
+	ExpireAt uint64 `json:"expire_at"`
+	// Disabled 是否已被禁用。
+	Disabled bool `json:"disabled"`
 }
 
 // 校验用户限速策略参数
@@ -77,9 +82,16 @@ func (a *App) UserLoginHandler(c *gin.Context) {
 	}
 	user, err := a.daoManager.AuthUser(param.Username, param.Password)
 	if err != nil {
+		// 区分“密码错误”和“账号禁用/过期”，方便前端提示；密码错误时保持通用错误不泄露信息。
+		errCode := "authentication failed"
+		if errors.Is(err, models.ErrUserDisabled) {
+			errCode = "user_disabled"
+		} else if errors.Is(err, models.ErrUserExpired) {
+			errCode = "user_expired"
+		}
 		c.JSON(401, gin.H{
 			"result": "failed",
-			"error":  "authentication failed",
+			"error":  errCode,
 		})
 		return
 	}
@@ -161,6 +173,8 @@ func (a *App) CreateUserHandler(c *gin.Context, user *models.User) {
 		RateLimitType   *uint  `json:"rate_limit_type"`
 		UploadLimitKB   uint64 `json:"upload_limit_kb"`
 		DownloadLimitKB uint64 `json:"download_limit_kb"`
+		// ExpireAt 用户有效期截止时间(unix 秒)，0/缺省=永不过期。
+		ExpireAt uint64 `json:"expire_at"`
 	}
 	var param Param
 	err = c.ShouldBindJSON(&param)
@@ -184,7 +198,7 @@ func (a *App) CreateUserHandler(c *gin.Context, user *models.User) {
 		return
 	}
 	err = a.daoManager.CreateUser(param.Username, param.Password, param.Description,
-		rateLimitType, param.UploadLimitKB, param.DownloadLimitKB)
+		rateLimitType, param.UploadLimitKB, param.DownloadLimitKB, param.ExpireAt)
 	if err != nil {
 		c.JSON(500, gin.H{
 			"result": "failed",
@@ -212,6 +226,9 @@ func (a *App) UpdateUserInfoHandler(c *gin.Context, user *models.User) {
 		MFAType *uint `json:"mfa_type"`
 		// MFARegenerate 在启用 MFA 时强制重新生成认证数据（用于泄露或换绑）。
 		MFARegenerate bool `json:"mfa_regenerate"`
+		// ExpireAt 为 nil 表示不修改有效期；0=永不过期，其余为 unix 秒。
+		// 非管理员修改自己的资料时忽略该字段，沿用原值。
+		ExpireAt *uint64 `json:"expire_at"`
 	}
 	var param Param
 	err := c.ShouldBindJSON(&param)
@@ -254,7 +271,7 @@ func (a *App) UpdateUserInfoHandler(c *gin.Context, user *models.User) {
 			return
 		}
 	}
-	// 非管理员修改自己的资料时，不允许改动限速策略，沿用原值
+	// 非管理员修改自己的资料时，不允许改动限速策略与有效期，沿用原值
 	targetUser, err := a.daoManager.GetUserByID(targetUserID)
 	if err != nil {
 		c.JSON(500, gin.H{
@@ -263,13 +280,16 @@ func (a *App) UpdateUserInfoHandler(c *gin.Context, user *models.User) {
 		})
 		return
 	}
+	expireAt := targetUser.ExpireAt
 	if !isAdmin {
 		param.RateLimitType = targetUser.RateLimitType
 		param.UploadLimitKB = targetUser.UploadLimitKB
 		param.DownloadLimitKB = targetUser.DownloadLimitKB
+	} else if param.ExpireAt != nil {
+		expireAt = *param.ExpireAt
 	}
 	err = a.daoManager.UpdateUserInfo(targetUserID, param.Description, param.Password,
-		param.RateLimitType, param.UploadLimitKB, param.DownloadLimitKB)
+		param.RateLimitType, param.UploadLimitKB, param.DownloadLimitKB, expireAt)
 	if err != nil {
 		c.JSON(500, gin.H{
 			"result": "failed",
@@ -381,6 +401,8 @@ func (a *App) GetUserInfoHandler(c *gin.Context, user *models.User) {
 		"upload_limit_kb":   user_queryed.UploadLimitKB,
 		"download_limit_kb": user_queryed.DownloadLimitKB,
 		"mfa_type":          user_queryed.MFAType,
+		"expire_at":         user_queryed.ExpireAt,
+		"disabled":          user_queryed.Disabled,
 		"result":            "success",
 	})
 }
@@ -456,6 +478,8 @@ func (a *App) ListUserHandler(c *gin.Context, user *models.User) {
 			UploadLimitKB:            u.UploadLimitKB,
 			DownloadLimitKB:          u.DownloadLimitKB,
 			MFAType:                  u.MFAType,
+			ExpireAt:                 u.ExpireAt,
+			Disabled:                 u.Disabled,
 		})
 	}
 
@@ -534,6 +558,52 @@ func (a *App) ResetUserTrafficHandler(c *gin.Context, user *models.User) {
 	})
 }
 
-// 禁用用户接口
+// setUsersDisabledHandler 是禁用/启用用户接口的共用实现。
+// 请求体兼容单个(id)与批量(id_list)：{"id": 1} 或 {"id_list": [1,2]}。
+func (a *App) setUsersDisabledHandler(c *gin.Context, disabled bool) {
+	type Param struct {
+		UserID     uint   `json:"id"`
+		UserIDList []uint `json:"id_list"`
+	}
+	var param Param
+	if err := c.ShouldBindJSON(&param); err != nil {
+		c.JSON(400, gin.H{
+			"result": "failed",
+			"error":  err.Error(),
+		})
+		return
+	}
+	// 兼容单个(id)与批量(id_list)两种调用
+	userIDList := param.UserIDList
+	if len(userIDList) == 0 && param.UserID != 0 {
+		userIDList = []uint{param.UserID}
+	}
+	if len(userIDList) == 0 {
+		c.JSON(400, gin.H{
+			"result": "failed",
+			"error":  "请至少指定一个用户",
+		})
+		return
+	}
+	if err := a.daoManager.SetUsersDisabled(userIDList, disabled); err != nil {
+		c.JSON(500, gin.H{
+			"result": "failed",
+			"error":  err.Error(),
+		})
+		return
+	}
+	c.JSON(200, gin.H{
+		"result": "success",
+		"error":  nil,
+	})
+}
+
+// 禁用用户接口：禁用后无法通过认证，已在线会话将被状态采集线程自动踢下线。
+func (a *App) DisableUserHandler(c *gin.Context, user *models.User) {
+	a.setUsersDisabledHandler(c, true)
+}
 
 // 启用用户接口
+func (a *App) EnableUserHandler(c *gin.Context, user *models.User) {
+	a.setUsersDisabledHandler(c, false)
+}

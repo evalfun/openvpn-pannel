@@ -43,6 +43,7 @@ const EVENT_TYPE_MAP = {
   13: { label: '二次认证下线', color: 'warning' },
   14: { label: '一次认证下线', color: 'warning' },
   15: { label: '服务器已恢复', color: 'success' },
+  16: { label: '账号失效下线', color: 'error' },
 };
 
 const formatTime = (ts) => {

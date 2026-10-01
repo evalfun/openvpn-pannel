@@ -100,6 +100,9 @@ const (
 
 	// SERVER_EVENT_TYPE_SERVER_RECOVERED 服务器异常退出后由看门狗自动拉起并恢复运行。
 	SERVER_EVENT_TYPE_SERVER_RECOVERED = 15
+
+	// SERVER_EVENT_TYPE_CLIENT_KICKED 用户账号被禁用或已过有效期，由状态采集线程自动踢下线。
+	SERVER_EVENT_TYPE_CLIENT_KICKED = 16
 )
 
 type ServerEvent struct {

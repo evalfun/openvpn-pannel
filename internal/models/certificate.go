@@ -33,7 +33,8 @@ const (
 const CERT_REF_PREFIX = "cert-stor:"
 
 // Certificate 证书存储记录。
-// Type 为 CERT_TYPE_CA 时 ParentID 为 0；服务器/客户端证书的 ParentID 指向签发它的 CA 记录 ID。
+// ParentID 指向签发该证书的上级证书记录 ID：自签名根 CA 为 0；服务器/客户端证书指向其 CA；
+// 由另一个 CA 签发的中间 CA 指向其上级 CA。
 type Certificate struct {
 	ID           uint   `gorm:"primarykey" json:"id"`
 	Name         string `gorm:"not null;index" json:"name"`

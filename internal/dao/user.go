@@ -6,6 +6,7 @@ import (
 	"openvpn-pannel/internal/config"
 	"openvpn-pannel/internal/models"
 	"openvpn-pannel/internal/passwd"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -44,7 +45,7 @@ func (um *DaoManager) useMemoryEvents() bool {
 func (um *DaoManager) useMemoryRuntime() bool {
 	return um != nil && um.runtimeMemory != nil
 }
-func (um *DaoManager) CreateUser(username, password, description string, rateLimitType uint, uploadLimitKB, downloadLimitKB uint64) error {
+func (um *DaoManager) CreateUser(username, password, description string, rateLimitType uint, uploadLimitKB, downloadLimitKB uint64, expireAt uint64) error {
 
 	hashedPasswd, err := passwd.Hash(password)
 	if err != nil {
@@ -60,6 +61,7 @@ func (um *DaoManager) CreateUser(username, password, description string, rateLim
 		"rate_limit_type":   rateLimitType,
 		"upload_limit_kb":   uploadLimitKB,
 		"download_limit_kb": downloadLimitKB,
+		"expire_at":         expireAt,
 	}
 	return um.DB.Model(&models.User{}).Create(record).Error
 }
@@ -147,6 +149,11 @@ func (um *DaoManager) AuthUser(username, password string) (*models.User, error) 
 	if !authenticated {
 		return nil, fmt.Errorf("authentication failed")
 	}
+	// 密码正确后再检查账号是否可用，避免向密码错误者泄露账号状态。
+	// 禁用/过期用户不允许认证（面板登录与 VPN 认证共用该入口）。
+	if err := user.CheckAvailable(time.Now()); err != nil {
+		return nil, err
+	}
 	return &user, nil
 }
 
@@ -206,7 +213,7 @@ func (um *DaoManager) GetUserByUsername(username string) (*models.User, error) {
 	return &user, nil
 }
 
-func (um *DaoManager) UpdateUserInfo(userID uint, description, password string, rateLimitType uint, uploadLimitKB, downloadLimitKB uint64) error {
+func (um *DaoManager) UpdateUserInfo(userID uint, description, password string, rateLimitType uint, uploadLimitKB, downloadLimitKB, expireAt uint64) error {
 	var user models.User
 	err := um.DB.First(&user, userID).Error
 	if err != nil {
@@ -216,6 +223,7 @@ func (um *DaoManager) UpdateUserInfo(userID uint, description, password string, 
 	user.RateLimitType = rateLimitType
 	user.UploadLimitKB = uploadLimitKB
 	user.DownloadLimitKB = downloadLimitKB
+	user.ExpireAt = expireAt
 	if password != "" {
 		hashedPasswd, err := passwd.Hash(password)
 		if err != nil {
@@ -224,6 +232,17 @@ func (um *DaoManager) UpdateUserInfo(userID uint, description, password string, 
 		user.Password = hashedPasswd
 	}
 	return um.DB.Save(&user).Error
+}
+
+// SetUsersDisabled 批量设置用户的禁用状态。userIDList 为空时不做任何事。
+// 该操作只改数据库字段，在线会话由状态采集线程在下一轮检查时自动踢下线。
+func (um *DaoManager) SetUsersDisabled(userIDList []uint, disabled bool) error {
+	if len(userIDList) == 0 {
+		return nil
+	}
+	return um.DB.Model(&models.User{}).
+		Where("id in (?)", userIDList).
+		Update("disabled", disabled).Error
 }
 
 // SetUserMFA 设置用户的多因素认证类型与数据。mfaType 为 MFA_TYPE_NONE 时清空数据。

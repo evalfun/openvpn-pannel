@@ -128,6 +128,48 @@ func TestValidateSignedByRejectsForeignCA(t *testing.T) {
 	}
 }
 
+// 中间 CA：由上级 CA 签发的 CA 证书应保持 CA 属性，且不是自签名；其签发的叶子证书可完成链式校验。
+func TestGenerateIntermediateCA(t *testing.T) {
+	root, err := GenerateCA(CertOptions{CommonName: "Root CA", Key: KeyOptions{KeyType: KeyTypeEC, ECCurve: "P256"}})
+	if err != nil {
+		t.Fatalf("generate root: %v", err)
+	}
+	if !IsSelfSigned(mustParse(t, root.CertPEM)) {
+		t.Fatal("root CA should be self-signed")
+	}
+
+	inter, err := GenerateCASignedBy(root.CertPEM, root.KeyPEM, CertOptions{
+		CommonName: "Intermediate CA", Key: KeyOptions{KeyType: KeyTypeRSA, RSABits: 2048},
+	})
+	if err != nil {
+		t.Fatalf("generate intermediate: %v", err)
+	}
+	interCert := mustParse(t, inter.CertPEM)
+	if !IsCACertificate(interCert) {
+		t.Fatal("intermediate cert should be a CA")
+	}
+	if IsSelfSigned(interCert) {
+		t.Fatal("intermediate cert should not be self-signed")
+	}
+	if err := ValidateSignedBy(inter.CertPEM, root.CertPEM); err != nil {
+		t.Fatalf("intermediate should be signed by root: %v", err)
+	}
+
+	leaf, err := SignCert(inter.CertPEM, inter.KeyPEM, CertOptions{
+		CommonName: "leaf", ServerAuth: true, Key: KeyOptions{KeyType: KeyTypeRSA, RSABits: 2048},
+	})
+	if err != nil {
+		t.Fatalf("sign leaf: %v", err)
+	}
+	if err := ValidateSignedBy(leaf.CertPEM, inter.CertPEM); err != nil {
+		t.Fatalf("leaf should be signed by intermediate: %v", err)
+	}
+	// 叶子不应能直接由根验签（未携带中间 CA 时链不完整），用于确认签名层级。
+	if err := ValidateSignedBy(leaf.CertPEM, root.CertPEM); err == nil {
+		t.Fatal("leaf must not verify directly against root")
+	}
+}
+
 func TestGenerateDHParams(t *testing.T) {
 	for _, bits := range []int{2048, 3072} {
 		pem, err := GenerateDHParams(bits)

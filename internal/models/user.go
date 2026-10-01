@@ -1,5 +1,19 @@
 package models
 
+import (
+	"errors"
+	"time"
+)
+
+// 用户不可认证/在线的原因。有效期到期与手动禁用都会导致用户无法通过认证，
+// 在线会话也会被状态采集线程踢下线。
+var (
+	// ErrUserDisabled 账号已被管理员禁用。
+	ErrUserDisabled = errors.New("账号已被禁用")
+	// ErrUserExpired 账号已超过有效期。
+	ErrUserExpired = errors.New("账号已过期")
+)
+
 // 用户限速策略类型。
 // 用户上线时先看用户策略，策略为“依据活跃用户组”时再取活跃用户组的限速值。
 const (
@@ -50,6 +64,27 @@ type User struct {
 	// MFAData 对应 MFAType 的认证数据（如 TOTP 的 Base32 密钥）。MFAType=0 时为空，
 	// 不通过接口明文返回。
 	MFAData string `gorm:"not null;default:''" json:"-"`
+	// ExpireAt 用户有效期截止时间(unix 秒)，0=永不过期。到期后无法通过认证，
+	// 已在线会话会被状态采集线程自动踢下线。
+	ExpireAt uint64 `gorm:"not null;default:0" json:"expire_at"`
+	// Disabled 是否被管理员禁用。禁用后无法通过认证，已在线会话会被自动踢下线。
+	Disabled bool `gorm:"not null;default:false" json:"disabled"`
+}
+
+// CheckAvailable 判断用户当前是否允许认证与保持在线：
+// 未被禁用且未超过有效期时返回 nil，否则返回具体原因（ErrUserDisabled / ErrUserExpired）。
+// now 方便调用方在批量检查时复用同一时间点，也便于测试。
+func (u *User) CheckAvailable(now time.Time) error {
+	if u == nil {
+		return errors.New("用户不存在")
+	}
+	if u.Disabled {
+		return ErrUserDisabled
+	}
+	if u.ExpireAt > 0 && uint64(now.Unix()) >= u.ExpireAt {
+		return ErrUserExpired
+	}
+	return nil
 }
 
 type Group struct {

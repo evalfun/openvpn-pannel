@@ -12,7 +12,7 @@ import (
 // TestCreateUserUsesBcrypt 验证新用户密码以 bcrypt 存储且可登录。
 func TestCreateUserUsesBcrypt(t *testing.T) {
 	dm := newTestDaoManager(t)
-	if err := dm.CreateUser("alice", "s3cret", "", models.RATE_LIMIT_TYPE_NONE, 0, 0); err != nil {
+	if err := dm.CreateUser("alice", "s3cret", "", models.RATE_LIMIT_TYPE_NONE, 0, 0, 0); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
 	u := mustUser(t, dm, "alice")
@@ -32,7 +32,7 @@ func TestAuthUserLegacyUpgrade(t *testing.T) {
 	dm := newTestDaoManager(t)
 	sum := sha256.Sum256([]byte("legacypw" + dm.cfg.PasswordSalt))
 	legacy := fmt.Sprintf("%x", sum)
-	if err := dm.CreateUser("legacy", "legacypw", "", models.RATE_LIMIT_TYPE_NONE, 0, 0); err != nil {
+	if err := dm.CreateUser("legacy", "legacypw", "", models.RATE_LIMIT_TYPE_NONE, 0, 0, 0); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 	// 把密码改写为旧版 sha256 哈希，模拟历史数据。
@@ -59,11 +59,11 @@ func TestAuthUserLegacyUpgrade(t *testing.T) {
 // TestUpdateUserPasswordUsesBcrypt 验证修改密码后使用 bcrypt。
 func TestUpdateUserPasswordUsesBcrypt(t *testing.T) {
 	dm := newTestDaoManager(t)
-	if err := dm.CreateUser("bob", "oldpw", "", models.RATE_LIMIT_TYPE_NONE, 0, 0); err != nil {
+	if err := dm.CreateUser("bob", "oldpw", "", models.RATE_LIMIT_TYPE_NONE, 0, 0, 0); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
 	u := mustUser(t, dm, "bob")
-	if err := dm.UpdateUserInfo(u.ID, "", "newpw", u.RateLimitType, 0, 0); err != nil {
+	if err := dm.UpdateUserInfo(u.ID, "", "newpw", u.RateLimitType, 0, 0, 0); err != nil {
 		t.Fatalf("UpdateUserInfo: %v", err)
 	}
 	updated := mustUser(t, dm, "bob")
@@ -79,7 +79,7 @@ func TestUpdateUserPasswordUsesBcrypt(t *testing.T) {
 func TestBatchResetUserTraffic(t *testing.T) {
 	dm := newTestDaoManager(t)
 	for _, n := range []string{"u1", "u2", "u3"} {
-		if err := dm.CreateUser(n, "pw", "", models.RATE_LIMIT_TYPE_NONE, 0, 0); err != nil {
+		if err := dm.CreateUser(n, "pw", "", models.RATE_LIMIT_TYPE_NONE, 0, 0, 0); err != nil {
 			t.Fatalf("create %s: %v", n, err)
 		}
 	}

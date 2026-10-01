@@ -2,7 +2,11 @@ package dao
 
 import (
 	"fmt"
+	"strings"
+
 	"openvpn-pannel/internal/models"
+
+	"gorm.io/gorm"
 )
 
 func (um *DaoManager) CreateCertificate(cert *models.Certificate) error {
@@ -94,6 +98,19 @@ func (um *DaoManager) ListChildCertificate(parentID uint) ([]*models.Certificate
 	var list []*models.Certificate
 	err := um.DB.Where("parent_id = ?", parentID).Order("id asc").Find(&list).Error
 	return list, err
+}
+
+// FindCertificateBySubject 依据主题名查找证书。用于信任链回溯：子证书的 Issuer 即上级证书的 Subject。
+// 可能存在多条同主题记录（如重复导入），按 id 升序返回第一条。
+func (um *DaoManager) FindCertificateBySubject(subject string) (*models.Certificate, error) {
+	if strings.TrimSpace(subject) == "" {
+		return nil, gorm.ErrRecordNotFound
+	}
+	var cert models.Certificate
+	if err := um.DB.Where("subject = ?", subject).Order("id asc").First(&cert).Error; err != nil {
+		return nil, err
+	}
+	return &cert, nil
 }
 
 func (um *DaoManager) CountChildCertificate(parentID uint) (int64, error) {

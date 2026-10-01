@@ -80,7 +80,7 @@ func TestResolveRateLimitActiveGroupRestriction(t *testing.T) {
 	if err := dm.CreateGroup("groupB", "", 300, 400); err != nil {
 		t.Fatalf("CreateGroup B: %v", err)
 	}
-	if err := dm.CreateUser("user1", "pass", "", models.RATE_LIMIT_TYPE_ACTIVE_GROUP_MIN, 0, 0); err != nil {
+	if err := dm.CreateUser("user1", "pass", "", models.RATE_LIMIT_TYPE_ACTIVE_GROUP_MIN, 0, 0, 0); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
 	u := mustUser(t, dm, "user1")
@@ -155,7 +155,7 @@ func TestResolveRateLimitPolicies(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := dm.CreateUser("u_"+tc.name, "p", "", tc.rateLimitType, tc.userUp, tc.userDown); err != nil {
+			if err := dm.CreateUser("u_"+tc.name, "p", "", tc.rateLimitType, tc.userUp, tc.userDown, 0); err != nil {
 				t.Fatalf("CreateUser: %v", err)
 			}
 			u := mustUser(t, dm, "u_"+tc.name)
@@ -189,7 +189,7 @@ func TestResolveRateLimitUserPermitAllGroupsAndDeny(t *testing.T) {
 
 	const serverID = 3
 	// 用户级放行：即使组权限未配置，所有所属组都活跃
-	if err := dm.CreateUser("permit_user", "p", "", models.RATE_LIMIT_TYPE_ACTIVE_GROUP_MIN, 0, 0); err != nil {
+	if err := dm.CreateUser("permit_user", "p", "", models.RATE_LIMIT_TYPE_ACTIVE_GROUP_MIN, 0, 0, 0); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
 	pu := mustUser(t, dm, "permit_user")
@@ -214,7 +214,7 @@ func TestResolveRateLimitUserPermitAllGroupsAndDeny(t *testing.T) {
 	}
 
 	// 用户级拒绝：无活跃组，默认策略返回不限速
-	if err := dm.CreateUser("deny_user", "p", "", models.RATE_LIMIT_TYPE_ACTIVE_GROUP_MIN, 0, 0); err != nil {
+	if err := dm.CreateUser("deny_user", "p", "", models.RATE_LIMIT_TYPE_ACTIVE_GROUP_MIN, 0, 0, 0); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
 	du := mustUser(t, dm, "deny_user")
@@ -256,7 +256,7 @@ func TestRateLimitPlanCycleAndResolution(t *testing.T) {
 	}
 
 	// 用户固定限速 500/0，用于验证与方案取最低
-	if err := dm.CreateUser("puser", "pass", "", models.RATE_LIMIT_TYPE_FIXED, 500, 0); err != nil {
+	if err := dm.CreateUser("puser", "pass", "", models.RATE_LIMIT_TYPE_FIXED, 500, 0, 0); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
 	u := mustUser(t, dm, "puser")

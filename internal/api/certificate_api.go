@@ -256,6 +256,124 @@ func (a *App) GetCertificateHandler(c *gin.Context, user *models.User) {
 	})
 }
 
+// certChainNode 信任链中的一个节点，从被查看的证书逐级向上到根 CA。
+type certChainNode struct {
+	ID           uint   `json:"id"`
+	Name         string `json:"name"`
+	Type         uint   `json:"type"`
+	CommonName   string `json:"common_name"`
+	Subject      string `json:"subject"`
+	Issuer       string `json:"issuer"`
+	SerialNumber string `json:"serial_number"`
+	NotBefore    int64  `json:"not_before"`
+	NotAfter     int64  `json:"not_after"`
+	IsCA         bool   `json:"is_ca"`
+	HasKey       bool   `json:"has_key"`
+	// IsRoot 该节点为自签名根证书。
+	IsRoot bool `json:"is_root"`
+	// Verified 该节点是否由链中的上一级（父节点）正确签发；根证书恒为 true。
+	Verified   bool   `json:"verified"`
+	CertSHA256 string `json:"cert_sha256"`
+	// Note 该节点的附加说明（如签名校验失败、上级缺失、自签名根）。
+	Note string `json:"note"`
+}
+
+// certChainMaxDepth 限制信任链回溯深度，避免脏数据导致的死循环/超长响应。
+const certChainMaxDepth = 16
+
+// findParentCertificate 查找给定证书的上级 CA：优先按记录中的 parent_id，其次按 Issuer 与
+// 库中某证书的 Subject 匹配（兼容导入的中间 CA）。已访问过的证书会被跳过以避免环。
+func (a *App) findParentCertificate(cert *models.Certificate, visited map[uint]bool) *models.Certificate {
+	if cert.ParentID != 0 && !visited[cert.ParentID] {
+		if parent, err := a.daoManager.GetCertificateByID(cert.ParentID); err == nil {
+			return parent
+		}
+	}
+	if parent, err := a.daoManager.FindCertificateBySubject(cert.Issuer); err == nil && !visited[parent.ID] {
+		return parent
+	}
+	return nil
+}
+
+// GetCertificateChainHandler 返回指定证书的信任链（从该证书逐级向上到根 CA）。
+// 链上每个节点附带签名校验结果；无法回溯到自签名根时 complete=false 并给出说明。
+func (a *App) GetCertificateChainHandler(c *gin.Context, user *models.User) {
+	id, err := strconv.ParseUint(c.DefaultQuery("id", ""), 10, 32)
+	if err != nil {
+		c.JSON(400, gin.H{"result": "failed", "error": "参数 id 必须是 int 类型"})
+		return
+	}
+	start, err := a.daoManager.GetCertificateByID(uint(id))
+	if err != nil {
+		c.JSON(404, gin.H{"result": "failed", "error": "证书不存在"})
+		return
+	}
+
+	chain := make([]certChainNode, 0, 4)
+	visited := make(map[uint]bool)
+	complete := false
+	note := ""
+	cur := start
+	for cur != nil && len(chain) < certChainMaxDepth {
+		node := certChainNode{
+			ID:           cur.ID,
+			Name:         cur.Name,
+			Type:         cur.Type,
+			Subject:      cur.Subject,
+			Issuer:       cur.Issuer,
+			SerialNumber: cur.SerialNumber,
+			NotBefore:    cur.NotBefore,
+			NotAfter:     cur.NotAfter,
+			HasKey:       cur.HasKey(),
+			Verified:     true,
+		}
+		if parsed, perr := certutil.ParseCertificate(cur.Cert); perr == nil {
+			node.CommonName = parsed.Subject.CommonName
+			node.IsCA = certutil.IsCACertificate(parsed)
+			node.IsRoot = certutil.IsSelfSigned(parsed)
+		}
+		if fp, ferr := certutil.FingerprintSHA256(cur.Cert); ferr == nil {
+			node.CertSHA256 = formatFingerprint(fp)
+		}
+		visited[cur.ID] = true
+		chain = append(chain, node)
+		last := len(chain) - 1
+
+		if chain[last].IsRoot {
+			chain[last].Note = "自签名根证书"
+			complete = true
+			break
+		}
+		parent := a.findParentCertificate(cur, visited)
+		if parent == nil {
+			chain[last].Verified = false
+			chain[last].Note = "未在证书库中找到签发者，信任链在此中断"
+			break
+		}
+		if verr := certutil.ValidateSignedBy(cur.Cert, parent.Cert); verr != nil {
+			chain[last].Verified = false
+			chain[last].Note = "上级证书签名校验失败: " + verr.Error()
+		}
+		cur = parent
+	}
+	if !complete && note == "" {
+		if cur != nil && len(chain) >= certChainMaxDepth {
+			note = "信任链层级过深，已截断"
+		} else {
+			note = "信任链未追溯到自签名根证书"
+		}
+	}
+	c.JSON(200, gin.H{
+		"result": "success",
+		"error":  nil,
+		"data": gin.H{
+			"chain":    chain,
+			"complete": complete,
+			"note":     note,
+		},
+	})
+}
+
 // sanitizeFilePart 清理下载文件名中的单个片段。
 func sanitizeFilePart(s, fallback string) string {
 	s = unsafeFileNameChars.ReplaceAllString(strings.TrimSpace(s), "_")
@@ -387,7 +505,8 @@ func (a *App) ParseCertificateHandler(c *gin.Context, user *models.User) {
 	c.JSON(200, gin.H{"result": "success", "error": nil, "data": resp})
 }
 
-// GenerateCAHandler 生成自签名 CA 证书。
+// GenerateCAHandler 生成 CA 证书。
+// parent_ca_id 为 0 时生成自签名根 CA；非 0 时由指定的上级 CA 签发一个中间 CA。
 func (a *App) GenerateCAHandler(c *gin.Context, user *models.User) {
 	type Param struct {
 		Name               string `json:"name" binding:"required,min=1,max=100"`
@@ -403,13 +522,15 @@ func (a *App) GenerateCAHandler(c *gin.Context, user *models.User) {
 		RSABits            int    `json:"rsa_bits"`
 		ECCurve            string `json:"ec_curve"`
 		Description        string `json:"description" binding:"max=500"`
+		// ParentCAID 上级 CA 的 id；0 表示自签名（根 CA），非 0 表示由该 CA 签发中间 CA。
+		ParentCAID uint `json:"parent_ca_id"`
 	}
 	var param Param
 	if err := c.ShouldBindJSON(&param); err != nil {
 		c.JSON(400, gin.H{"result": "failed", "error": err.Error()})
 		return
 	}
-	pair, err := certutil.GenerateCA(certutil.CertOptions{
+	certOpt := certutil.CertOptions{
 		CommonName:         param.CommonName,
 		Org:                param.Org,
 		OrganizationalUnit: param.OrganizationalUnit,
@@ -419,17 +540,45 @@ func (a *App) GenerateCAHandler(c *gin.Context, user *models.User) {
 		EmailAddress:       param.EmailAddress,
 		Days:               param.Days,
 		Key:                certKeyOptions(param.KeyType, param.RSABits, param.ECCurve),
-	})
-	if err != nil {
-		c.JSON(500, gin.H{"result": "failed", "error": "生成 CA 失败: " + err.Error()})
-		return
 	}
-	cert := a.certPairToModel(param.Name, models.CERT_TYPE_CA, 0, pair, param.Description)
+	var pair *certutil.CertPair
+	var parentID uint
+	action := "生成CA"
+	if param.ParentCAID != 0 {
+		parent, err := a.daoManager.GetCertificateByID(param.ParentCAID)
+		if err != nil {
+			c.JSON(404, gin.H{"result": "failed", "error": "上级 CA 不存在"})
+			return
+		}
+		if parent.Type != models.CERT_TYPE_CA {
+			c.JSON(400, gin.H{"result": "failed", "error": "指定的上级证书不是 CA"})
+			return
+		}
+		if !parent.HasKey() {
+			c.JSON(400, gin.H{"result": "failed", "error": "上级 CA 没有私钥，无法签发证书"})
+			return
+		}
+		pair, err = certutil.GenerateCASignedBy(parent.Cert, parent.Key, certOpt)
+		if err != nil {
+			c.JSON(500, gin.H{"result": "failed", "error": "生成中间 CA 失败: " + err.Error()})
+			return
+		}
+		parentID = parent.ID
+		action = "生成中间CA"
+	} else {
+		var err error
+		pair, err = certutil.GenerateCA(certOpt)
+		if err != nil {
+			c.JSON(500, gin.H{"result": "failed", "error": "生成 CA 失败: " + err.Error()})
+			return
+		}
+	}
+	cert := a.certPairToModel(param.Name, models.CERT_TYPE_CA, parentID, pair, param.Description)
 	if err := a.daoManager.CreateCertificate(cert); err != nil {
 		c.JSON(500, gin.H{"result": "failed", "error": err.Error()})
 		return
 	}
-	a.logCertificateEvent(c, user, models.CERT_EVENT_TYPE_CREATE, "生成CA", cert, nil)
+	a.logCertificateEvent(c, user, models.CERT_EVENT_TYPE_CREATE, action, cert, nil)
 	c.JSON(200, gin.H{"result": "success", "error": nil, "data": toCertListItem(cert)})
 }
 
@@ -604,33 +753,50 @@ func (a *App) DeleteCertificateHandler(c *gin.Context, user *models.User) {
 		return
 	}
 
-	var childList []*models.Certificate
+	var cascadeList []*models.Certificate
 	if cert.Type == models.CERT_TYPE_CA {
-		// 该 CA 下若有服务器证书，禁止删除
-		serverCount, err := a.daoManager.CountChildCertificateByType(cert.ID, models.CERT_TYPE_SERVER)
-		if err != nil {
-			c.JSON(500, gin.H{"result": "failed", "error": err.Error()})
-			return
-		}
-		if serverCount > 0 {
-			c.JSON(400, gin.H{"result": "failed", "error": "该 CA 下仍有服务器证书，无法删除"})
-			return
-		}
-		childList, err = a.daoManager.ListChildCertificate(cert.ID)
-		if err != nil {
-			c.JSON(500, gin.H{"result": "failed", "error": err.Error()})
-			return
-		}
-		for _, child := range childList {
-			ref, err := a.daoManager.CountServerReferencingCertificate(child.ID)
+		// 递归收集整棵子树：该 CA 下的服务器证书会阻止删除（与旧行为一致），
+		// 客户端证书会被级联删除；中间 CA 的子证书也会一并纳入，避免留下悬挂引用。
+		seen := make(map[uint]bool)
+		var collect func(id uint, isTarget bool) error
+		collect = func(id uint, isTarget bool) error {
+			if seen[id] {
+				return nil
+			}
+			seen[id] = true
+			node, err := a.daoManager.GetCertificateByID(id)
 			if err != nil {
-				c.JSON(500, gin.H{"result": "failed", "error": err.Error()})
-				return
+				return err
 			}
-			if ref > 0 {
-				c.JSON(400, gin.H{"result": "failed", "error": "该 CA 下的证书正被服务器使用，无法删除"})
-				return
+			if !isTarget {
+				if node.Type == models.CERT_TYPE_SERVER {
+					return fmt.Errorf("该 CA 下仍有服务器证书「%s」，无法删除", node.Name)
+				}
+				ref, err := a.daoManager.CountServerReferencingCertificate(id)
+				if err != nil {
+					return err
+				}
+				if ref > 0 {
+					return fmt.Errorf("该 CA 下的证书「%s」正被服务器使用，无法删除", node.Name)
+				}
 			}
+			children, err := a.daoManager.ListChildCertificate(id)
+			if err != nil {
+				return err
+			}
+			for _, child := range children {
+				if err := collect(child.ID, false); err != nil {
+					return err
+				}
+			}
+			if !isTarget {
+				cascadeList = append(cascadeList, node)
+			}
+			return nil
+		}
+		if err := collect(cert.ID, true); err != nil {
+			c.JSON(400, gin.H{"result": "failed", "error": err.Error()})
+			return
 		}
 	}
 
@@ -645,8 +811,8 @@ func (a *App) DeleteCertificateHandler(c *gin.Context, user *models.User) {
 		return
 	}
 
-	// 删除 CA 时一并删除其下剩余的子证书（客户端证书）
-	for _, child := range childList {
+	// 删除 CA 时一并删除其下剩余的证书（客户端证书、中间 CA 等）
+	for _, child := range cascadeList {
 		if err := a.daoManager.DeleteCertificate(child.ID); err != nil {
 			c.JSON(500, gin.H{"result": "failed", "error": err.Error()})
 			return

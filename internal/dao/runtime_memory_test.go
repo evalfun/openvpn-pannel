@@ -180,7 +180,7 @@ func TestRuntimeMemoryRateLimitCycle(t *testing.T) {
 	if err := dm.CreateRateLimitPlan(plan, nil); err != nil {
 		t.Fatalf("CreateRateLimitPlan: %v", err)
 	}
-	if err := dm.CreateUser("cyc", "pass", "", models.RATE_LIMIT_TYPE_FIXED, 500, 0); err != nil {
+	if err := dm.CreateUser("cyc", "pass", "", models.RATE_LIMIT_TYPE_FIXED, 500, 0, 0); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
 	u := mustUser(t, dm, "cyc")
@@ -240,7 +240,7 @@ func TestRuntimeMemoryRateLimitCycle(t *testing.T) {
 // 未关联达量限速方案的用户累加周期流量应为空操作（与 DB 语义一致）。
 func TestRuntimeMemoryCycleTrafficNoPlan(t *testing.T) {
 	dm := newMemoryEventDaoManager(t, 100)
-	if err := dm.CreateUser("noplan", "pass", "", models.RATE_LIMIT_TYPE_ACTIVE_GROUP_MIN, 0, 0); err != nil {
+	if err := dm.CreateUser("noplan", "pass", "", models.RATE_LIMIT_TYPE_ACTIVE_GROUP_MIN, 0, 0, 0); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
 	u := mustUser(t, dm, "noplan")
@@ -259,7 +259,7 @@ func TestRuntimeMemoryPlanAssignSyncsCycle(t *testing.T) {
 	if err := dm.CreateRateLimitPlan(plan, nil); err != nil {
 		t.Fatalf("CreateRateLimitPlan: %v", err)
 	}
-	if err := dm.CreateUser("sync", "pass", "", models.RATE_LIMIT_TYPE_FIXED, 0, 0); err != nil {
+	if err := dm.CreateUser("sync", "pass", "", models.RATE_LIMIT_TYPE_FIXED, 0, 0, 0); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
 	u := mustUser(t, dm, "sync")
@@ -290,7 +290,7 @@ func TestRuntimeMemoryPlanAssignSyncsCycle(t *testing.T) {
 // 管理端重置用户流量时，内存中的在线会话流量与终身流量都应清零。
 func TestRuntimeMemoryResetTrafficSyncsClients(t *testing.T) {
 	dm := newMemoryEventDaoManager(t, 100)
-	if err := dm.CreateUser("bob", "pass", "", models.RATE_LIMIT_TYPE_ACTIVE_GROUP_MIN, 0, 0); err != nil {
+	if err := dm.CreateUser("bob", "pass", "", models.RATE_LIMIT_TYPE_ACTIVE_GROUP_MIN, 0, 0, 0); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
 	u := mustUser(t, dm, "bob")
@@ -321,7 +321,7 @@ func TestRuntimeMemoryResetTrafficSyncsClients(t *testing.T) {
 // 内存模式下，UpdateUserTraffic 累加终身流量到内存，不写数据库；读取时叠加。
 func TestRuntimeMemoryLifetimeTraffic(t *testing.T) {
 	dm := newMemoryEventDaoManager(t, 100)
-	if err := dm.CreateUser("carol", "pass", "", models.RATE_LIMIT_TYPE_ACTIVE_GROUP_MIN, 0, 0); err != nil {
+	if err := dm.CreateUser("carol", "pass", "", models.RATE_LIMIT_TYPE_ACTIVE_GROUP_MIN, 0, 0, 0); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
 	u := mustUser(t, dm, "carol")

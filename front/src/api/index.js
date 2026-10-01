@@ -72,6 +72,9 @@ export const certificateAPI = {
   // 获取证书详细信息（不含证书/私钥本体）
   getInfo: (id) => client.get(`/certificate/info?id=${id}`),
 
+  // 获取证书信任链（从该证书逐级向上到根 CA）
+  getChain: (id) => client.get(`/certificate/chain?id=${id}`),
+
   // 下载证书 / 私钥（返回完整响应以便读取 Content-Disposition 文件名）
   downloadCert: (id) => client.get(`/certificate/download_cert?id=${id}`, { responseType: 'blob' }),
   downloadKey: (id) => client.get(`/certificate/download_key?id=${id}`, { responseType: 'blob' }),
@@ -199,6 +202,14 @@ export const userManageAPI = {
 
   // 批量清除用户流量
   resetTrafficBatch: (idList) => client.post('/user/reset_traffic', { id_list: idList }),
+
+  // 禁用用户（单个或多个）
+  disableUser: (id) => client.post('/user/disable', { id }),
+  disableUsers: (idList) => client.post('/user/disable', { id_list: idList }),
+
+  // 启用用户（单个或多个）
+  enableUser: (id) => client.post('/user/enable', { id }),
+  enableUsers: (idList) => client.post('/user/enable', { id_list: idList }),
 };
 
 export const permissionAPI = {

@@ -421,14 +421,40 @@ func IsCACertificate(cert *x509.Certificate) bool {
 	return false
 }
 
+// IsSelfSigned 判断证书是否自签名（Subject == Issuer 且能用自身公钥验签）。
+// 自签名证书通常是信任链的根。
+func IsSelfSigned(cert *x509.Certificate) bool {
+	if cert == nil {
+		return false
+	}
+	if cert.Subject.String() != cert.Issuer.String() {
+		return false
+	}
+	return cert.CheckSignatureFrom(cert) == nil
+}
+
 // GenerateCA 生成自签名 CA 证书。
 func GenerateCA(opt CertOptions) (*CertPair, error) {
 	opt.IsCA = true
 	return generateCertificate(opt, nil, nil)
 }
 
+// GenerateCASignedBy 使用上级 CA 签发一个中间 CA 证书（IsCA=true）。
+// 生成的证书由 caCertPEM/caKeyPEM 对应的 CA 签名，可用于构建 CA 信任链。
+func GenerateCASignedBy(caCertPEM, caKeyPEM string, opt CertOptions) (*CertPair, error) {
+	opt.IsCA = true
+	return signWithCA(caCertPEM, caKeyPEM, opt)
+}
+
 // SignCert 使用指定 CA 签发服务器/客户端证书。
 func SignCert(caCertPEM, caKeyPEM string, opt CertOptions) (*CertPair, error) {
+	// 非 CA 用途由调用方通过 CertOptions 指定（ServerAuth/ClientAuth）。
+	opt.IsCA = false
+	return signWithCA(caCertPEM, caKeyPEM, opt)
+}
+
+// signWithCA 解析上级 CA 证书与私钥，校验匹配后签发子证书。
+func signWithCA(caCertPEM, caKeyPEM string, opt CertOptions) (*CertPair, error) {
 	caCert, err := ParseCertificate(caCertPEM)
 	if err != nil {
 		return nil, fmt.Errorf("解析 CA 证书失败: %w", err)

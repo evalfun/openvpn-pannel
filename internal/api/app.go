@@ -14,6 +14,7 @@ import (
 
 	"openvpn-pannel/internal/config"
 	"openvpn-pannel/internal/dao"
+	"openvpn-pannel/internal/models"
 	ovpnserver "openvpn-pannel/internal/ovpn_server"
 )
 
@@ -326,8 +327,67 @@ func (a *App) updateConnectedClientInfoRecords() {
 				}
 			}
 		}
+		// 账号有效期/禁用检查：对已失效用户立即踢下线（兜底处理“连接后才失效”的会话）。
+		a.enforceUserValidity(serverInstance, clientStatusList)
 		// 达量限速：重新计算生效限速，只对变化（或需要踢下线）的客户端处理
 		a.reconcileRateLimits(serverInstance, clientStatusList)
+	}
+}
+
+// commonNameByVirtualIP 建立“虚拟IP -> 客户端证书名(common_name)”映射，IPv4 与 IPv6 地址都收录。
+// 踢下线需要证书名，而在线记录以主地址为键，故按地址反查证书名。
+func commonNameByVirtualIP(clientStatusList []*ovpnserver.ServerStatusClientInfoResponse) map[string]string {
+	commonNameByVIP := make(map[string]string)
+	for _, info := range clientStatusList {
+		for _, virtualIPAddr := range info.VirtualIPAddr {
+			commonNameByVIP[virtualIPAddr] = info.CommonName
+		}
+		for _, virtualIPAddr := range info.VirtualIP6Addr {
+			commonNameByVIP[virtualIPAddr] = info.CommonName
+		}
+	}
+	return commonNameByVIP
+}
+
+// enforceUserValidity 检查在线客户端对应用户是否被禁用或已过有效期，对不可用用户立即断开连接。
+// 由状态采集线程周期性调用：认证环节已拦截新连接，这里负责“连接后才失效”的在线会话。
+func (a *App) enforceUserValidity(serverInstance *ovpnserver.OpenVPNServerInstance, clientStatusList []*ovpnserver.ServerStatusClientInfoResponse) {
+	serverID := serverInstance.GetServerModel().ID
+	records, err := a.daoManager.ListConnectedClientInfoRecordByServerID(serverID)
+	if err != nil || len(records) == 0 {
+		return
+	}
+	commonNameByVIP := commonNameByVirtualIP(clientStatusList)
+	now := time.Now()
+	for _, record := range records {
+		user, err := a.daoManager.GetUserByUsername(record.Username)
+		if err != nil {
+			continue
+		}
+		if err = user.CheckAvailable(now); err == nil {
+			continue
+		}
+		// 用户名对应证书名；拿不到证书名则回退到在线记录里保存的证书名。
+		commonName := commonNameByVIP[record.VirtualIPAddr]
+		if commonName == "" {
+			commonName = record.ClientCertName
+		}
+		if commonName == "" {
+			continue
+		}
+		resourceMap := a.PrepareResourceMap([]string{ovpnserver.RESOURCE_ID_MISC_CONFIG})
+		// 踢下线要访问管理 socket，与实例的其它操作互斥，取写锁。
+		pl := a.getProcessLock(serverID)
+		pl.Lock()
+		_, killErr := serverInstance.CloseClient(commonName, record.RealIPAddr, "", resourceMap)
+		pl.Unlock()
+		if killErr != nil {
+			log.Printf("用户 %s %s，踢下线失败 server %d 证书 %s: %v", record.Username, err.Error(), serverID, commonName, killErr)
+			continue
+		}
+		log.Printf("用户 %s %s，已断开 server %d 证书 %s 虚拟IP %s", record.Username, err.Error(), serverID, commonName, record.VirtualIPAddr)
+		a.daoManager.CreateEvent(serverID, models.SERVER_EVENT_TYPE_CLIENT_KICKED, record.RealIPAddr,
+			fmt.Sprintf("用户=%s 原因=%s 证书=%s 虚拟IP=%s", record.Username, err.Error(), commonName, record.VirtualIPAddr))
 	}
 }
 
@@ -347,15 +407,7 @@ func (a *App) reconcileRateLimits(serverInstance *ovpnserver.OpenVPNServerInstan
 	if err != nil || len(records) == 0 {
 		return
 	}
-	commonNameByVIP := make(map[string]string)
-	for _, info := range clientStatusList {
-		for _, virtualIPAddr := range info.VirtualIPAddr {
-			commonNameByVIP[virtualIPAddr] = info.CommonName
-		}
-		for _, virtualIPAddr := range info.VirtualIP6Addr {
-			commonNameByVIP[virtualIPAddr] = info.CommonName
-		}
-	}
+	commonNameByVIP := commonNameByVirtualIP(clientStatusList)
 
 	changes := make([]rateLimitChange, 0)
 	for _, record := range records {

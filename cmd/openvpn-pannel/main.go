@@ -134,7 +134,7 @@ func main() {
 			log.Fatalf("Failed to connect database: %v", err)
 		}
 		err = userManager.CreateUser(username, password, description,
-			models.RATE_LIMIT_TYPE_ACTIVE_GROUP_MIN, 0, 0)
+			models.RATE_LIMIT_TYPE_ACTIVE_GROUP_MIN, 0, 0, 0)
 		if err != nil {
 			log.Fatalf("Failed to create user: %v", err)
 		}

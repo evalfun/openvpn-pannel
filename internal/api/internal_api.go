@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"openvpn-pannel/internal/models"
@@ -103,11 +104,20 @@ func (a *App) UserAuthInternalHandler(c *gin.Context) {
 	//log.Println("auth", username, password)
 	userModel, err := a.daoManager.AuthUser(username, password)
 	if err != nil {
-		if a.loginCooldown != nil {
-			a.loginCooldown.RecordFailure(authCooldownKey)
+		// 区分密码错误与账号禁用/过期：后者给出明确提示，且不计入暴力破解限流。
+		reason := "用户名或密码错误"
+		switch {
+		case errors.Is(err, models.ErrUserDisabled):
+			reason = "账号已被禁用"
+		case errors.Is(err, models.ErrUserExpired):
+			reason = "账号已过期"
+		default:
+			if a.loginCooldown != nil {
+				a.loginCooldown.RecordFailure(authCooldownKey)
+			}
 		}
-		c.String(403, "result="+"用户名或密码错误")
-		a.daoManager.CreateEvent(uint(serverID), models.SERVER_EVENT_TYPE_CLIENT_AUTH_FAIL, requestData["real_ip_addr"], fmt.Sprintf("用户名或密码错误 证书=%s 用户名=%s", requestData["client_cert_name"], username))
+		c.String(403, "result="+reason)
+		a.daoManager.CreateEvent(uint(serverID), models.SERVER_EVENT_TYPE_CLIENT_AUTH_FAIL, requestData["real_ip_addr"], fmt.Sprintf("%s 证书=%s 用户名=%s", reason, requestData["client_cert_name"], username))
 		return
 	}
 	// 检查用户是否有权限

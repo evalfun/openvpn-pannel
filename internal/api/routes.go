@@ -91,6 +91,8 @@ func (a *App) setupRoutes() {
 		api.GET("/user/list", a.AdminLoginWarper(a.ListUserHandler))
 		api.POST("/user/delete", a.AdminLoginWarper(a.DeleteUserHandler))
 		api.POST("/user/reset_traffic", a.AdminLoginWarper(a.ResetUserTrafficHandler))
+		api.POST("/user/disable", a.AdminLoginWarper(a.DisableUserHandler))
+		api.POST("/user/enable", a.AdminLoginWarper(a.EnableUserHandler))
 
 		// 用户组接口
 		api.POST("/group/create", a.AdminLoginWarper(a.CreateGroupHandler))
@@ -136,6 +138,7 @@ func (a *App) setupRoutes() {
 		// 证书管理接口
 		api.GET("/certificate/list", a.AdminLoginWarper(a.ListCertificateHandler))
 		api.GET("/certificate/info", a.AdminLoginWarper(a.GetCertificateHandler))
+		api.GET("/certificate/chain", a.AdminLoginWarper(a.GetCertificateChainHandler))
 		api.GET("/certificate/download_cert", a.AdminLoginWarper(a.DownloadCertificateHandler))
 		api.GET("/certificate/download_key", a.AdminLoginWarper(a.DownloadCertificateKeyHandler))
 		api.POST("/certificate/parse", a.AdminLoginWarper(a.ParseCertificateHandler))

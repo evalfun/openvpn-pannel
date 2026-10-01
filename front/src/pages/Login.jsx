@@ -90,6 +90,10 @@ const Login = () => {
         // 验证码尝试过于频繁：保持弹框打开并提示剩余冷却时间
         setMfaError(data.message || '验证码尝试过于频繁，请稍后再试');
         setOpenMfaDialog(true);
+      } else if (code === 'user_disabled') {
+        setError('登录失败：该账号已被禁用');
+      } else if (code === 'user_expired') {
+        setError('登录失败：该账号已过有效期');
       } else {
         setError('登录失败：' + (data.message || data.error || '用户名或密码错误'));
       }

@@ -115,7 +115,7 @@ func TestRuntimeMemoryInternalOnlineOfflineNoDBWrite(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	app := newMemoryEventTestApp(t, 100)
 
-	if err := app.daoManager.CreateUser("alice", "pass", "", models.RATE_LIMIT_TYPE_ACTIVE_GROUP_MIN, 0, 0); err != nil {
+	if err := app.daoManager.CreateUser("alice", "pass", "", models.RATE_LIMIT_TYPE_ACTIVE_GROUP_MIN, 0, 0, 0); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
 
