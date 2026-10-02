@@ -127,9 +127,11 @@ sudo setcap cap_net_admin+ep /usr/sbin/openvpn
 并在 `sudoers`（如 `/etc/sudoers.d/openvpn-pannel`）放行面板所需的网络命令：
 
 ```sudoers
+# 将username替换为进程执行用户
 username ALL=(ALL) NOPASSWD: /usr/sbin/iptables
 username ALL=(ALL) NOPASSWD: /usr/sbin/ip6tables
 username ALL=(ALL) NOPASSWD: /usr/sbin/ipset
+username ALL=(ALL) NOPASSWD: /usr/sbin/nft
 username ALL=(ALL) NOPASSWD: /usr/sbin/tc
 ```
 
@@ -179,6 +181,53 @@ go build -ldflags "-X 'main.buildDate=$(date '+%Y-%m-%d %H:%M:%S')'" ./cmd/openv
 > 查看/编辑每套资源并切换当前启用的资源集（切换后需重启服务器进程生效）。也可以直接运行
 > `make assets` 重新生成内嵌资源。
 
+## 项目对比
+
+常见 OpenVPN 面板的对比如下（完整对比见 [`project-comparison.md`](project-comparison.md)）：
+
+| 项目 | 地址 | 特点 |
+|---|---|---|
+| **openvpn-pannel**（本项目） | <https://github.com/evalfun/openvpn-pannel> | 企业级控制平面：认证 + MFA + 用户组 + ACL + 限速 + 多实例 + 审计 + 自建 CA + OpenWrt |
+| **ovpnmanager** | <https://github.com/slc14211421/ovpnmanager> | 轻量 FastAPI 运维面板，前后端分离 |
+| **openvpn-ui** | <https://github.com/d3vilh/openvpn-ui> | Docker 化 Web UI，支持 LDAP/OAuth、服务端 2FA、PKI 维护 |
+| **ovpn-admin** | <https://github.com/palark/ovpn-admin> | 云原生证书/用户管理器，Prometheus + Kubernetes，无面板认证 |
+
+### 功能对比
+
+| 功能 | pannel（本项目） | ovpnmanager | openvpn-ui | ovpn-admin |
+|---|---|---|---|---|
+| 多 OpenVPN 实例 | 支持 | 不支持 | 不支持 | 部分 |
+| 进程托管/保活 | 支持 | 不支持 | 不支持 | 不支持 |
+| 用户 + 用户组 | 支持 | 部分 | 部分 | 不支持 |
+| 面板登录认证 | 支持 | 支持 | 支持 | 不支持 |
+| MFA/TOTP | 支持 | 不支持 | 支持 | 不支持 |
+| LDAP / OAuth | 不支持 | 不支持 | 支持 | 不支持 |
+| ACL 访问控制 | 支持 | 不支持 | 不支持 | 不支持 |
+| 带宽/达量限速 | 支持 | 不支持 | 不支持 | 不支持 |
+| 证书（自建 CA/多级） | 支持 | 部分 | 部分 | 部分 |
+| CCD（静态 IP/路由） | 支持 | 支持 | 部分 | 支持 |
+| 在线状态/踢下线 | 支持 | 支持 | 支持 | 支持 |
+| 审计日志 | 支持 | 支持 | 部分 | 不支持 |
+| 客户端自助页 | 支持 | 不支持 | 不支持 | 不支持 |
+| 内存模式（护闪存） | 支持 | 不支持 | 不支持 | 不支持 |
+| Prometheus 指标 | 不支持 | 不支持 | 不支持 | 支持 |
+| master/slave 同步 | 部分 | 不支持 | 不支持 | 支持 |
+| Kubernetes 集成 | 不支持 | 不支持 | 不支持 | 支持 |
+| OpenWrt/嵌入式 | 支持 | 不支持 | 不支持 | 不支持 |
+
+### 选型速查
+
+| 需求 | 推荐 |
+|---|---|
+| 登录认证、审计、权限、可公网暴露 | **pannel（本项目）** |
+| ACL、带宽/达量限速、多实例托管 | **pannel（本项目）** |
+| 路由器/嵌入式（OpenWrt、ARM） | **pannel（本项目）** |
+| 单机快速可视化（Python/Vue） | ovpnmanager |
+| Docker 生态、LDAP/OAuth、PKI 维护 | openvpn-ui |
+| Kubernetes、Prometheus/Grafana、master/slave | ovpn-admin |
+
+> 技术栈、认证安全、部署与完整结论见 [`project-comparison.md`](project-comparison.md)。
+
 ## 文档
 
 - **完整文档**：[`full-doc.md`](full-doc.md) —— 与面板内置“帮助信息”内容一致的完整手册，
@@ -187,3 +236,5 @@ go build -ldflags "-X 'main.buildDate=$(date '+%Y-%m-%d %H:%M:%S')'" ./cmd/openv
 - 也可随时在面板内查看 **帮助信息** 页面（内容相同，且可在线编辑，见 `allow_edit_resource`）。
 - OpenWrt 专属的依赖、目录约定、procd 启动脚本、下载限速实测与防火墙区域设置，见 `full-doc.md`
   的「13.1 部署（OpenWrt / ImmortalWrt，procd）」章节。
+- **项目对比**：[`project-comparison.md`](project-comparison.md) —— 与 ovpnmanager、openvpn-ui、
+  ovpn-admin 在技术栈、功能、认证安全与部署上的完整对比。
