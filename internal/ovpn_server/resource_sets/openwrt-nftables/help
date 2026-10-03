@@ -1159,7 +1159,7 @@ ip link del ifb9
 - **出站（Output）**：选 **拒绝**。
 - **转发区域**：
   - **fw3+iptables** 系统和 **OpenWrt+iptables** 脚本下，不需要选任何区域转发到此区域，也不需要选择此区域能转发到任何区域。
-  - **fw4+nftables** 系统和 **OpenWrt+iptables** 脚本下，同样不需要。
+  - **fw4+nftables** 系统和 **OpenWrt+iptables** 脚本下，需要选择所有可能访问到的区域。
   - **fw4+nftables** 系统和 **OpenWrt+nftables** 脚本下，需要选择所有可能访问到的区域。
 
 #### 13.1.8 新建接口
@@ -1181,13 +1181,8 @@ ip link del ifb9
 > 为什么要建这个接口：OpenWrt/fw4 需要有对应的 UCI 接口记录，才能把 openvpn 的动态接口绑定到 `openvpn` 防火墙区域。
 > 选「不配置协议」表示不让 OpenWrt 管理它的地址，地址仍由 openvpn 进程自行配置。
 
-#### 13.1.9 工作原理：面板规则与 fw4 (nftables) 的匹配顺序
 
-- **fw4 + nftables + OpenWrt+iptables 脚本**：数据包**优先匹配面板脚本下发的 `iptables` 规则**（ACL 放行、限速等），之后才匹配由 fw4 维护的 `nft` 规则。客户端能访问哪些目标、是否限速，由**面板 ACL** 决定；不需要选择 VPN 客户端需要访问到的所有区域。
-- **fw4 + nftables + OpenWrt+nftables 脚本**：数据包匹配系统自带防火墙和面板添加的防火墙规则。客户端能访问哪些目标、是否限速，由**面板 ACL 和 OpenWrt 自带防火墙规则**同时决定；需要选择 VPN 客户端需要访问到的所有区域。
-- **fw3 + iptables + OpenWrt+iptables 脚本**：数据包**优先匹配面板下发的 iptables 规则**，由**面板 ACL** 决定；不需要选择区域。
-
-#### 13.1.10 OpenWrt 常见问题
+#### 13.1.9 OpenWrt 常见问题
 
 - **限速不生效**：确认已安装 `tc`，且内核包含 `sch_htb`、`cls_u32`、`sch_ingress`。**下载（入方向）限速**优先依赖 `ifb` + `act_mirred`（`kmod-ifb`、`kmod-sched-act-mirred`），不可用时回退 `act_police`；两者都缺失时脚本记录 WARNING 并跳过下载限速。请在「资源管理」页确认已启用 OpenWrt 版资源集。
 - **ACL 未生效**：iptables 资源集确认已安装 `ipset`（缺失时回落到逐条 `iptables`）；nftables 资源集需安装 `nftables`，并确认服务端启动脚本成功建立了 `openvpn_acl_<服务器ID>` 表。

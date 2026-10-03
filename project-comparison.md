@@ -23,7 +23,7 @@
 | 前后端分发 | 单二进制，前端内嵌 | 前后端分离 + Nginx | 单二进制 + 静态资源 / Docker | 单二进制内嵌 / Docker / Helm |
 | 数据库/存储 | SQLite / MySQL（GORM） | SQLite（SQLAlchemy） | SQLite（Beego ORM） | 文件系统 / **K8s Secrets** |
 | 配置方式 | `config.json` | `.env` | `conf/app.conf` + DB | flags / 环境变量 |
-| 核心外部依赖 | **无 openssl** | EasyRSA/openssl、systemctl | EasyRSA/openssl、Docker、oathtool、qrencode | EasyRSA/openssl、bash、openvpn-user |
+| 核心外部依赖 | bash、iptables/ipset、nftables、tc | EasyRSA/openssl、systemctl | EasyRSA/openssl、Docker、oathtool、qrencode | EasyRSA/openssl、bash、openvpn-user |
 | 后端代码量 | ~15k 行 | ~2.7k 行 | ~3.3k 行 | ~3k 行 |
 | 前端代码量 | ~11.5k 行 | ~1.5k 行 | ~2.6k 行模板 | ~0.5k 行 |
 | 测试 | 有（~5k 行 Go 单测） | 少量（276 行） | 无 | 无 |

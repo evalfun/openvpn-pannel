@@ -211,7 +211,7 @@ go build -ldflags "-X 'main.buildDate=$(date '+%Y-%m-%d %H:%M:%S')'" ./cmd/openv
 | 客户端自助页 | 支持 | 不支持 | 不支持 | 不支持 |
 | 内存模式（护闪存） | 支持 | 不支持 | 不支持 | 不支持 |
 | Prometheus 指标 | 不支持 | 不支持 | 不支持 | 支持 |
-| master/slave 同步 | 部分 | 不支持 | 不支持 | 支持 |
+| master/slave 同步 | 不支持 | 不支持 | 不支持 | 支持 |
 | Kubernetes 集成 | 不支持 | 不支持 | 不支持 | 支持 |
 | OpenWrt/嵌入式 | 支持 | 不支持 | 不支持 | 不支持 |
 

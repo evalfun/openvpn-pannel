@@ -1164,7 +1164,7 @@ ip link del ifb9
 - **出站（Output）**：选 **拒绝**。
 - **转发区域**：
   - **fw3+iptables** 系统和 **OpenWrt+iptables** 脚本下，不需要选任何区域转发到此区域，也不需要选择此区域能转发到任何区域。
-  - **fw4+nftables** 系统和 **OpenWrt+iptables** 脚本下，同样不需要。
+  - **fw4+nftables** 系统和 **OpenWrt+iptables** 脚本下，需要选择所有可能访问到的区域。
   - **fw4+nftables** 系统和 **OpenWrt+nftables** 脚本下，需要选择所有可能访问到的区域。
 
 #### 13.1.8 新建接口
@@ -1186,13 +1186,8 @@ ip link del ifb9
 > 为什么要建这个接口：OpenWrt/fw4 需要有对应的 UCI 接口记录，才能把 openvpn 的动态接口绑定到 `openvpn` 防火墙区域。
 > 选「不配置协议」表示不让 OpenWrt 管理它的地址，地址仍由 openvpn 进程自行配置。
 
-#### 13.1.9 工作原理：面板规则与 fw4 (nftables) 的匹配顺序
 
-- **fw4 + nftables + OpenWrt+iptables 脚本**：数据包**优先匹配面板脚本下发的 `iptables` 规则**（ACL 放行、限速等），之后才匹配由 fw4 维护的 `nft` 规则。客户端能访问哪些目标、是否限速，由**面板 ACL** 决定；不需要选择 VPN 客户端需要访问到的所有区域。
-- **fw4 + nftables + OpenWrt+nftables 脚本**：数据包匹配系统自带防火墙和面板添加的防火墙规则。客户端能访问哪些目标、是否限速，由**面板 ACL 和 OpenWrt 自带防火墙规则**同时决定；需要选择 VPN 客户端需要访问到的所有区域。
-- **fw3 + iptables + OpenWrt+iptables 脚本**：数据包**优先匹配面板下发的 iptables 规则**，由**面板 ACL** 决定；不需要选择区域。
-
-#### 13.1.10 OpenWrt 常见问题
+#### 13.1.9 OpenWrt 常见问题
 
 - **限速不生效**：确认已安装 `tc`，且内核包含 `sch_htb`、`cls_u32`、`sch_ingress`。**下载（入方向）限速**优先依赖 `ifb` + `act_mirred`（`kmod-ifb`、`kmod-sched-act-mirred`），不可用时回退 `act_police`；两者都缺失时脚本记录 WARNING 并跳过下载限速。请在「资源管理」页确认已启用 OpenWrt 版资源集。
 - **ACL 未生效**：iptables 资源集确认已安装 `ipset`（缺失时回落到逐条 `iptables`）；nftables 资源集需安装 `nftables`，并确认服务端启动脚本成功建立了 `openvpn_acl_<服务器ID>` 表。
@@ -1200,6 +1195,61 @@ ip link del ifb9
 - **应用接口后地址消失**：正常现象，见 13.1.8，重启服务器进程即可恢复。
 - **改了资源脚本 / config.json**：需重启服务才生效。
 - **停止面板后 openvpn 进程残留**：请使用 `/etc/init.d/openvpn-pannel stop` 正常停止。**不要用 `kill -9`**，否则 openvpn 会残留为孤儿进程；若使用旧版面板，升级到本节的 procd 脚本并重建二进制即可。
+
+### 13.2 Docker 部署的优势与劣势
+
+面板推荐使用 **systemd**（见 13.0）或 **OpenWrt procd**（见 13.1）部署，也支持直接运行静态二进制，未提供官方
+Docker 镜像。不过 Docker 部署**并非完全不可行**，可行与否取决于**部署拓扑**——下面分别说明。
+
+**两种拓扑：可行与不可行**
+
+- **只把面板放进容器、OpenVPN 留在宿主机**：**不可行**。面板的 ACL / 防火墙（`nft` / `iptables` / `ipset`）、
+  限速（`tc`）、`conntrack` 都作用于客户端实际经过的**宿主网络命名空间与宿主接口**；此类规则会落到容器的私有
+  netns 内，**ACL、限速、转发控制将全部失效**。
+- **整栈打包（面板 + OpenVPN + 网络工具 + bash 同镜像、同 netns）**：**可行**。所有进程同属一个 netns，
+  规则、`tc`、conntrack 作用在同一 tun 接口上，功能自洽。它相当于把产品从「管理宿主 OpenVPN」变为
+  「一体化 VPN 设备」，也是常见开源面板（如 openvpn-ui、ovpn-admin）的做法。
+
+**优势**
+
+| 优势 | 说明 |
+|---|---|
+| userspace 依赖自包含 | 将 openvpn / iptables / nftables / ipset / tc / conntrack / bash 一并装进镜像，宿主无需安装；适合不可变 / 极简主机（Flatcar、Talos、K8s 节点） |
+| 版本固定、可复现 | openvpn 与工具链版本随镜像固定，避免宿主差异 |
+| 一键起整栈 | 编排、自愈、资源限制、多架构分发由容器运行时统一管理 |
+| 镜像可较精简 | 本项目证书由纯 Go 生成、`ta.key` 用 `openvpn --genkey`，**无需 easyrsa / openssl**，镜像只需 openvpn + 网络工具 + bash |
+| 职责解耦（双容器共享 netns 时） | 面板与 OpenVPN 可分别升级 |
+
+**劣势**
+
+| 劣势 | 说明 |
+|---|---|
+| 内核依赖无法封装 | `nf_conntrack`、`nf_tables`、`ipset`、`sch_htb`、`cls_u32`、`act_police`、`ifb` 等都在**宿主内核**，镜像装不下；宿主内核裁剪或缺失时仍然失败 |
+| 特权更大 | 仍需 `/dev/net/tun` 与 `CAP_NET_ADMIN`，实践中常直接 `privileged`；相比 `setcap` + `sudoers` + `AmbientCapabilities` 的最小权限模型，安全面明显更大 |
+| 网络模型更复杂 | bridge / host 模式取舍、端口发布、内网路由与 NAT、`ip_forward`、IPv6 等需额外处理——即网络命名空间与 iptables 规则问题，它们不会消失，只是转移到编排与文档 |
+| HA / 无感知重启退化 | 目前靠 `stop_instances_on_exit=false` + systemd `KillMode=process` 让实例脱离面板存活；单容器停止会杀掉整个 cgroup，该特性失效（除非把 OpenVPN 拆到独立容器 / 进程托管） |
+| 多实例端口映射复杂 | 每个实例的端口都要暴露，配置更繁琐 |
+| 日志 | 文件日志 + 容量轮换需挂卷，或改为 stdout |
+| 发行工程成本 | 多架构镜像、openvpn 与工具链的安全更新、配套文档 |
+| 与其它项目重叠 | 功能与 openvpn-ui 等一体化镜像重叠；对嵌入式 / OpenWrt 场景，原生 procd 在体积与内核适配上仍更优 |
+
+**前置条件（若自行容器化）**
+
+- `--device /dev/net/tun` + `--cap-add NET_ADMIN`（或 `privileged`）；
+- 宿主内核启用 `nf_conntrack`、`nf_tables`（或 `ip_tables` / `ip_set`）以及 `tc` 所需 qdisc / action 模块；
+- 开启 `net.ipv4.ip_forward`（及按需的 IPv6 转发）：通过 `--sysctl` 或宿主设置；
+- 挂卷持久化工作目录、数据库与证书；
+- 注意脚本的 `sudo` 问题：`linux-*` 资源集脚本硬编码 `sudo nft` / `iptables` / `tc`，容器内以 root 运行时应改用
+  `openwrt-*` 资源集（不使用 sudo），或安装并配置 `sudo` NOPASSWD；
+- `openvpn_path` 与 `shell_path` 可在资源中配置，指向镜像内路径。
+
+**建议**
+
+- 首选 **systemd**（13.0）、**OpenWrt procd**（13.1）或静态二进制：依赖少、权限最小、无残留，且支持
+  「面板重启客户端无感知」；
+- 若确需 Docker，建议采用**双容器共享 netns**（`network_mode: service:openvpn`），而不是单容器塞两个服务，
+  并明确标注为**实验性**，在文档中写清上述内核与网络前置条件；
+- 是否提供官方镜像取决于目标用户：面向不可变主机 / K8s 用户价值较高，面向 VPS / 路由器 / 嵌入式则收益有限。
 
 ---
 
