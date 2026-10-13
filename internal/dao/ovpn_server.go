@@ -239,7 +239,7 @@ func (um *DaoManager) AddOpenVPNServerClientConfig(clientConfig *models.ClientCo
 	var currentConfig *models.ClientConfig
 	err := tx.Where("server_id = ? and client_cert_name = ?", clientConfig.ServerID, clientConfig.ClientCertName).First(&currentConfig).Error
 	if err != nil {
-		err = um.DB.Create(clientConfig).Error
+		err = tx.Create(clientConfig).Error
 		if err != nil {
 			tx.Rollback()
 			return fmt.Errorf("新增客户端配置失败: %s", err.Error())
